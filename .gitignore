@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+tests/.build/
+*.tsbuildinfo
+
+# Compiled native helper: rebuilt by "npm run native:mac".
+resources/bin/notebro-sysaudio
+resources/bin/*.exe
+
+# Generated from scripts/make-icon.mjs.
+build/icon.png
+
+.DS_Store
+*.log

@@ -1,0 +1,55 @@
+appId: it.beatdata.notebro
+productName: NoteBro
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+extraResources:
+  # The ScreenCaptureKit helper on macOS; absent on other platforms.
+  - from: resources/bin
+    to: bin
+    filter: ['**/*']
+asar: true
+# The diarization library is a native addon: it has to live outside the archive
+# to be loadable at runtime.
+asarUnpack:
+  - '**/node_modules/sherpa-onnx*/**'
+  # The Opus encoder ships prebuilt .node binaries, unloadable from the archive.
+  - '**/node_modules/@evan/opus/**'
+afterPack: scripts/after-pack.mjs
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  # Unsigned local build: scripts/after-pack.mjs applies an ad-hoc signature,
+  # which keeps the Privacy permissions stable between launches.
+  identity: null
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    LSMinimumSystemVersion: '13.0'
+    NSMicrophoneUsageDescription: NoteBro registra il microfono per trascrivere la tua voce in locale.
+    NSAudioCaptureUsageDescription: NoteBro registra l'audio di sistema per trascrivere il tuo interlocutore in locale.
+
+dmg:
+  title: NoteBro ${version}
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: NoteBro
+
+linux:
+  target: [AppImage]
+  category: Office

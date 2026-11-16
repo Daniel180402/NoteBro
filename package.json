@@ -1,0 +1,45 @@
+{
+  "name": "notebro",
+  "version": "1.0.0",
+  "description": "Registra microfono e audio di sistema, trascrive e riassume in locale",
+  "main": "out/main/index.js",
+  "author": "Daniel Jarnig",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "native:mac": "node scripts/build-native.mjs",
+    "build": "electron-vite build",
+    "dist:mac": "npm run cert:mac && npm run native:mac && npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "test": "node tests/run.mjs",
+    "test:integration": "node tests/run.mjs --integration",
+    "cert:mac": "node scripts/make-signing-cert.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "dompurify": "^3.4.15",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "marked": "^18.0.14",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "5.9"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@evan/opus": "^1.0.3",
+    "sherpa-onnx-node": "^1.13.8",
+    "webm-muxer": "^5.1.4"
+  }
+}

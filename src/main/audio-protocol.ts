@@ -2,7 +2,8 @@ import { createReadStream, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { protocol } from 'electron'
-import { noteDir, sessionDir } from './paths'
+import { sessionDir } from './paths'
+import { noteDirFor } from './store'
 import { parseRange } from './range'
 
 export const AUDIO_SCHEME = 'notebro-audio'
@@ -40,8 +41,8 @@ function resolve(url: URL): Resolved | null {
   const candidates =
     url.hostname === 'note'
       ? [
-          { path: join(noteDir(id), 'audio.webm'), contentType: 'audio/webm' },
-          { path: join(noteDir(id), 'audio.wav'), contentType: 'audio/wav' }
+          { path: join(noteDirFor(id), 'audio.webm'), contentType: 'audio/webm' },
+          { path: join(noteDirFor(id), 'audio.wav'), contentType: 'audio/wav' }
         ]
       : url.hostname === 'session'
         ? [{ path: join(sessionDir(id), 'mix.wav'), contentType: 'audio/wav' }]

@@ -286,7 +286,7 @@ export function NoteDetail({
           Esporta con trascrizione
         </button>
         <button type="button" className="btn" onClick={onReveal}>
-          Mostra nel Finder
+          {/Mac/.test(navigator.platform) ? 'Mostra nel Finder' : 'Mostra nella cartella'}
         </button>
         <span className="spacer" />
         {confirmDelete ? (

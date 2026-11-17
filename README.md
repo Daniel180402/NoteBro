@@ -141,7 +141,7 @@ comunque nel verbale.
 Restano anche salvati in chiaro accanto al riassunto, per rileggere cosa avevi
 annotato.
 
-## Trascrizione in diretta (opzionale)
+## Trascrizione in diretta (sperimentale, opzionale)
 
 Spenta di default: la trascrizione avviene a fine call. Da *Impostazioni → Trascrizione in
 diretta* si può attivare la visualizzazione delle battute mentre si parla, con qualche
@@ -250,13 +250,22 @@ Tutto sotto `~/Library/Application Support/NoteBro` (su Windows
 library.json          indice di cartelle e riassunti
 settings.json         preferenze
 models/               modelli whisper scaricati
-notes/<id>/           summary.md, transcript.json, audio.webm (mix riascoltabile)
+notes/<titolo>/       summary.md, transcript.json, audio.webm (mix riascoltabile)
 sessions/<id>/        audio temporaneo, cancellato al salvataggio
 logs/notebro.log      diagnostica di cattura, permessi e trascrizione
 ```
 
 I riassunti sono normali file Markdown: puoi leggerli e modificarli anche fuori
-dall'app. *Mostra nel Finder* apre la cartella della nota.
+dall'app. *Mostra nel Finder* (*Mostra nella cartella* su Windows e Linux) apre la
+cartella della nota.
+
+Da *Impostazioni → Dove salvare le note* si sceglie una cartella diversa per le note
+(per esempio una sincronizzata) e come chiamare la cartella di ogni nota: con il titolo
+così com'è (`Riunione con Marco budget 2027`) o in snake_case
+(`riunione_con_marco_budget_2027`). Le impostazioni valgono per le nuove note; *Sposta
+e rinomina le note esistenti* le applica a quelle già salvate. Rinominando una nota, la
+sua cartella segue il titolo. L'indice (`library.json`), le impostazioni e i modelli
+restano nella cartella dell'app.
 
 ## Test
 

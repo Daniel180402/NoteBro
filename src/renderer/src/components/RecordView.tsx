@@ -564,7 +564,9 @@ function LiveTranscript({
   return (
     <div className="card">
       <div className="card__head">
-        <h2>Trascrizione in diretta</h2>
+        <h2>
+          Trascrizione in diretta <span className="pill">Sperimentale</span>
+        </h2>
         <span className="pill">
           <span className={`dot ${dot}`} />
           {status?.state === 'ready'

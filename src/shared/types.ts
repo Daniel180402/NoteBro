@@ -27,8 +27,13 @@ export interface Folder {
   createdAt: number
 }
 
+/** How a note's folder on disk is named: as typed, or lowercase_with_underscores. */
+export type NoteNaming = 'title' | 'snake'
+
 export interface NoteMeta {
   id: string
+  /** Absolute folder holding the note's files; absent on notes saved before it was configurable. */
+  dir?: string
   folderId: string | null
   title: string
   /** Language code the call was recorded in. */
@@ -150,6 +155,9 @@ export interface Settings {
   liveWhisperModel: string
   /** Skip the final transcription and keep the live one. */
   reuseLiveTranscript: boolean
+  /** Where new notes are saved; empty means inside the app's data folder. */
+  notesDirectory: string
+  noteNaming: NoteNaming
 }
 
 export interface LiveStatus {

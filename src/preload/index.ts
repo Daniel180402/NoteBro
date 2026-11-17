@@ -208,6 +208,11 @@ const api = {
     ): Promise<Library> => ipcRenderer.invoke('notes:update', id, patch),
     remove: (id: string): Promise<Library> => ipcRenderer.invoke('notes:delete', id),
     reveal: (id: string): Promise<void> => ipcRenderer.invoke('notes:reveal', id),
+    defaultDirectory: (): Promise<string> => ipcRenderer.invoke('notes:defaultDirectory'),
+    chooseDirectory: (): Promise<{ path: string | null; error?: string }> =>
+      ipcRenderer.invoke('notes:chooseDirectory'),
+    reorganize: (): Promise<{ library: Library; moved: number; failed: string[] }> =>
+      ipcRenderer.invoke('notes:reorganize'),
     export: (input: {
       title: string
       summary: string

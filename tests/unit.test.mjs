@@ -15,7 +15,8 @@ import {
   voicedWindow,
   voicesIn,
   pulse,
-  chunker
+  chunker,
+  naming
 } from './.build/modules.mjs'
 
 export async function run() {
@@ -470,6 +471,23 @@ export async function run() {
     check('drops what whisper itself calls non-speech', json.transcription.length === 1)
     const plain = chunker.serverToWhisperJson({ text: 'solo testo' }, 3000)
     check('accepts the plain json format too', plain.transcription[0]?.offsets.to === 3000)
+  }
+
+  section('naming: folder names for saved notes')
+  {
+    const title = 'Riunione con Marco: budget 2027'
+    check('keeps a readable title', naming.noteFolderName(title, 'title') === 'Riunione con Marco budget 2027')
+    check('turns it into snake_case', naming.noteFolderName(title, 'snake') === 'riunione_con_marco_budget_2027')
+    check('drops accents in snake_case', naming.noteFolderName('Perché è così?', 'snake') === 'perche_e_cosi')
+    check('keeps accents in a normal title', naming.noteFolderName('Perché è così?', 'title') === 'Perché è così')
+    check('removes path separators', !naming.noteFolderName('a/b\\c', 'title').match(/[\/\\]/))
+    check('never yields an empty name', naming.noteFolderName('???', 'title') === 'Senza titolo' && naming.noteFolderName('***', 'snake') === 'senza_titolo')
+    check('avoids names Windows reserves', naming.noteFolderName('CON', 'title') === 'Senza titolo')
+    const long = naming.noteFolderName('parola '.repeat(30), 'title')
+    check('clips long titles on a word', long.length <= 80 && !long.endsWith(' ') && long.endsWith('parola'))
+    const taken = new Set(['Riunione', 'Riunione (2)', 'riunione'])
+    check('numbers duplicates', naming.uniqueName('Riunione', 'title', (name) => taken.has(name)) === 'Riunione (3)')
+    check('numbers duplicates in snake_case', naming.uniqueName('riunione', 'snake', (name) => taken.has(name)) === 'riunione_2')
   }
 
   await rm(dir, { recursive: true, force: true })

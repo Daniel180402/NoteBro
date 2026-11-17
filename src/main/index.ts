@@ -1,6 +1,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, writeFile } from 'node:fs/promises'
 import { BrowserWindow, app, dialog, ipcMain, session, shell } from 'electron'
 import { handleAudioRequests, registerAudioScheme } from './audio-protocol'
 import * as diarization from './diarization'
@@ -14,7 +15,7 @@ import type {
 } from '@shared/types'
 import { logLine, logPath } from './log'
 import * as ollama from './ollama'
-import { noteDir, root, sessionDir } from './paths'
+import { defaultNotesRoot, root, sessionDir } from './paths'
 import * as pipeline from './pipeline'
 import * as recorder from './recorder'
 import * as storage from './storage'
@@ -210,7 +211,7 @@ function registerIpc(): void {
 
   ipcMain.handle('storage:report', async () => {
     const library = await store.getLibrary()
-    return storage.report(library.notes.map((note) => note.id))
+    return storage.report(library.notes.map((note) => store.noteDirFor(note.id)))
   })
   ipcMain.handle('storage:cleanSessions', async () => {
     const draft = await loadDraft()
@@ -330,8 +331,27 @@ function registerIpc(): void {
   )
   ipcMain.handle('notes:delete', (_event, id: string) => store.deleteNote(id))
   ipcMain.handle('notes:reveal', (_event, id: string) => {
-    shell.showItemInFolder(join(noteDir(id), 'summary.md'))
+    shell.showItemInFolder(join(store.noteDirFor(id), 'summary.md'))
   })
+  ipcMain.handle('notes:defaultDirectory', () => defaultNotesRoot())
+  ipcMain.handle('notes:chooseDirectory', async () => {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Cartella delle note',
+      properties: ['openDirectory', 'createDirectory']
+    }
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+    const chosen = result.canceled ? undefined : result.filePaths[0]
+    if (!chosen) return { path: null }
+    try {
+      await access(chosen, constants.W_OK)
+    } catch {
+      return { path: null, error: 'NoteBro non può scrivere in quella cartella.' }
+    }
+    return { path: chosen }
+  })
+  ipcMain.handle('notes:reorganize', () => store.reorganizeNotes())
   ipcMain.handle(
     'notes:export',
     async (_event, input: { title: string; summary: string; transcript?: string }) => {

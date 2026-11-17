@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type {
   DownloadProgress,
   OllamaStatus,
@@ -217,7 +217,9 @@ export function SettingsView({
 
       <div className="card">
         <div className="card__head">
-          <h2>Trascrizione in diretta</h2>
+          <h2>
+            Trascrizione in diretta <span className="pill">Sperimentale</span>
+          </h2>
           {settings.liveTranscription && (
             <span className="pill">
               <span className={`dot ${whisper?.serverBinaryPath ? 'dot--ok' : 'dot--bad'}`} />
@@ -226,8 +228,10 @@ export function SettingsView({
           )}
         </div>
         <p className="faint" style={{ marginTop: 0 }}>
-          Mostra la trascrizione mentre parli, con qualche secondo di ritardo. Di default è
-          spenta: la trascrizione avviene a fine call.
+          Funzione sperimentale: mostra la trascrizione mentre parli, con qualche secondo di
+          ritardo. Di default è spenta e la trascrizione avviene a fine call. Può avere ancora
+          difetti: se qualcosa non va, la registrazione continua comunque e la call viene
+          trascritta per intero alla fine.
         </p>
         <div className="banner banner--warn">
           <div className="banner__body">
@@ -250,7 +254,7 @@ export function SettingsView({
             onChange={(event) => onPatch({ liveTranscription: event.target.checked })}
           />
           <span>
-            <span className="toggle__label">Trascrivi durante la call</span>
+            <span className="toggle__label">Trascrivi durante la call (sperimentale)</span>
             <span className="toggle__hint">
               Usa whisper-server, che NoteBro avvia a inizio registrazione e chiude alla fine.
             </span>
@@ -457,6 +461,8 @@ export function SettingsView({
           </p>
         </div>
       )}
+
+      <NotesLocation settings={settings} onPatch={onPatch} />
 
       <div className="card">
         <div className="card__head">
@@ -804,5 +810,129 @@ export function SettingsView({
         </label>
       </div>
     </>
+  )
+}
+
+/** Turns a title into the folder name the chosen convention produces, for the preview. */
+function previewName(title: string, naming: Settings['noteNaming']): string {
+  if (naming === 'snake') {
+    return title
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '_')
+      .replace(/^_+|_+$/g, '')
+  }
+  return title.replace(/[<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function NotesLocation({
+  settings,
+  onPatch
+}: {
+  settings: Settings
+  onPatch: (patch: Partial<Settings>) => void
+}): React.JSX.Element {
+  const [defaultDir, setDefaultDir] = useState('')
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [moving, setMoving] = useState(false)
+
+  useEffect(() => {
+    void window.notebro.notes.defaultDirectory().then(setDefaultDir)
+  }, [])
+
+  const current = settings.notesDirectory || defaultDir
+  const sample = 'Riunione con Marco: budget 2027'
+
+  const choose = async (): Promise<void> => {
+    setMessage(null)
+    const result = await window.notebro.notes.chooseDirectory()
+    if (result.error) setMessage({ ok: false, text: result.error })
+    else if (result.path) onPatch({ notesDirectory: result.path })
+  }
+
+  const reorganize = async (): Promise<void> => {
+    setMoving(true)
+    setMessage(null)
+    try {
+      const result = await window.notebro.notes.reorganize()
+      setMessage(
+        result.failed.length > 0
+          ? {
+              ok: false,
+              text: `Spostate ${result.moved} note; non sono riuscito a spostare: ${result.failed.join(', ')}. Dettagli nel log.`
+            }
+          : {
+              ok: true,
+              text:
+                result.moved > 0
+                  ? `Fatto: ${result.moved} note spostate e rinominate.`
+                  : 'Le note sono già tutte al loro posto.'
+            }
+      )
+    } catch (error) {
+      setMessage({ ok: false, text: (error as Error).message })
+    } finally {
+      setMoving(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Dove salvare le note</h2>
+      <p className="faint" style={{ marginTop: 0 }}>
+        Ogni nota è una cartella con il riassunto (<code>summary.md</code>), la trascrizione (
+        <code>transcript.json</code>) e, se la conservi, la registrazione.
+      </p>
+
+      <label className="field">
+        <span>Cartella</span>
+        <input type="text" value={current} readOnly />
+      </label>
+      <div className="row row--wrap" style={{ marginBottom: 16 }}>
+        <button type="button" className="btn" onClick={() => void choose()}>
+          Scegli cartella…
+        </button>
+        {settings.notesDirectory && (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => onPatch({ notesDirectory: '' })}
+          >
+            Usa quella predefinita
+          </button>
+        )}
+      </div>
+
+      <label className="field">
+        <span>Nome della cartella di ogni nota</span>
+        <select
+          value={settings.noteNaming}
+          onChange={(event) => onPatch({ noteNaming: event.target.value as Settings['noteNaming'] })}
+        >
+          <option value="title">Titolo normale — {previewName(sample, 'title')}</option>
+          <option value="snake">snake_case — {previewName(sample, 'snake')}</option>
+        </select>
+      </label>
+      <p className="faint" style={{ marginTop: 6 }}>
+        Se due note hanno lo stesso titolo, alla seconda viene aggiunto un numero. Quando rinomini
+        una nota, la sua cartella viene rinominata di conseguenza.
+      </p>
+
+      <p className="faint" style={{ marginBottom: 10 }}>
+        Cartella e nome valgono per le nuove note. Per applicarli anche a quelle già salvate:
+      </p>
+      <div className="row row--wrap">
+        <button type="button" className="btn" onClick={() => void reorganize()} disabled={moving}>
+          {moving ? 'Spostamento…' : 'Sposta e rinomina le note esistenti'}
+        </button>
+        {message && (
+          <span className="pill">
+            <span className={`dot ${message.ok ? 'dot--ok' : 'dot--bad'}`} />
+            {message.text}
+          </span>
+        )}
+      </div>
+    </div>
   )
 }

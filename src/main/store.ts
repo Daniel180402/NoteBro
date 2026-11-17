@@ -19,8 +19,8 @@ const DEFAULT_SETTINGS: Settings = {
   whisperModel: 'small',
   whisperBinaryPath: '',
   whisperThreads: 0,
-  ollamaModel: '',
-  ollamaBaseUrl: 'http://127.0.0.1:11434',
+  providers: [],
+  defaultProviderId: '',
   speakerLabels: { me: 'Io', them: 'Interlocutore' },
   userName: '',
   vocabulary: '',
@@ -52,18 +52,55 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+/** Settings written before providers existed kept a single Ollama in two fields. */
+interface LegacySettings {
+  ollamaModel?: string
+  ollamaBaseUrl?: string
+}
+
+export const LOCAL_OLLAMA_ID = 'ollama-locale'
+
+function withProviders(stored: Partial<Settings> & LegacySettings): Pick<Settings, 'providers' | 'defaultProviderId'> {
+  const providers =
+    stored.providers && stored.providers.length > 0
+      ? stored.providers
+      : [
+          {
+            id: LOCAL_OLLAMA_ID,
+            name: 'Ollama locale',
+            kind: 'ollama' as const,
+            baseUrl: stored.ollamaBaseUrl || 'http://127.0.0.1:11434',
+            model: stored.ollamaModel ?? '',
+            contextLength: 0,
+            cliPath: ''
+          }
+        ]
+  const defaultProviderId = providers.some((provider) => provider.id === stored.defaultProviderId)
+    ? (stored.defaultProviderId as string)
+    : providers[0].id
+  return { providers, defaultProviderId }
+}
+
 export async function getSettings(): Promise<Settings> {
-  const stored = await readJson<Partial<Settings>>(settingsFile(), {})
+  const stored = await readJson<Partial<Settings> & LegacySettings>(settingsFile(), {})
+  const { ollamaModel: _model, ollamaBaseUrl: _url, ...current } = stored
   return {
     ...DEFAULT_SETTINGS,
-    ...stored,
+    ...current,
+    ...withProviders(stored),
     speakerLabels: { ...DEFAULT_SETTINGS.speakerLabels, ...(stored.speakerLabels ?? {}) }
   }
 }
 
 export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
   const next = { ...(await getSettings()), ...patch }
-  await writeAtomic(settingsFile(), JSON.stringify(next, null, 2))
+  // Mirror the default Ollama into the fields older versions read, so going
+  // back to one keeps the summary working.
+  const fallback =
+    next.providers.find((provider) => provider.id === next.defaultProviderId && provider.kind === 'ollama') ??
+    next.providers.find((provider) => provider.kind === 'ollama')
+  const legacy: LegacySettings = fallback ? { ollamaBaseUrl: fallback.baseUrl, ollamaModel: fallback.model } : {}
+  await writeAtomic(settingsFile(), JSON.stringify({ ...next, ...legacy }, null, 2))
   return next
 }
 
@@ -210,7 +247,7 @@ export interface SaveNoteInput {
   durationMs: number
   summary: string
   segments: Segment[]
-  models: { whisper: string; ollama: string }
+  models: { whisper: string; ollama: string; provider?: string }
   /** Names given to the detected remote voices, keyed by voice index. */
   voiceNames?: Record<string, string>
   userNotes?: string

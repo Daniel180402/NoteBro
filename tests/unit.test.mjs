@@ -16,7 +16,8 @@ import {
   voicesIn,
   pulse,
   chunker,
-  naming
+  naming,
+  providerRules
 } from './.build/modules.mjs'
 
 export async function run() {
@@ -488,6 +489,24 @@ export async function run() {
     const taken = new Set(['Riunione', 'Riunione (2)', 'riunione'])
     check('numbers duplicates', naming.uniqueName('Riunione', 'title', (name) => taken.has(name)) === 'Riunione (3)')
     check('numbers duplicates in snake_case', naming.uniqueName('riunione', 'snake', (name) => taken.has(name)) === 'riunione_2')
+  }
+
+  section('providerRules: does the transcript leave the computer?')
+  {
+    const local = { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5:7b' }
+    check('local Ollama stays local', !providerRules.isRemote(local))
+    check('localhost too', !providerRules.isRemote({ ...local, baseUrl: 'http://localhost:11434' }))
+    check('Ollama on another machine is remote', providerRules.isRemote({ ...local, baseUrl: 'http://192.168.1.20:11434' }))
+    check(
+      'a :cloud model is remote even through local Ollama',
+      providerRules.isRemote({ ...local, model: 'kimi-k2.5:cloud' }) &&
+        providerRules.destinationOf({ ...local, model: 'kimi-k2.5:cloud' }) === 'ollama.com'
+    )
+    const router = { kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'x' }
+    check('OpenRouter is remote, named by host', providerRules.isRemote(router) && providerRules.destinationOf(router) === 'openrouter.ai')
+    check('LM Studio on loopback is local', !providerRules.isRemote({ kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', model: 'x' }))
+    check('the Claude API is remote', providerRules.isRemote({ kind: 'anthropic', baseUrl: '', model: '' }))
+    check('Claude Code is remote', providerRules.isRemote({ kind: 'claude-code', baseUrl: '', model: '' }))
   }
 
   await rm(dir, { recursive: true, force: true })

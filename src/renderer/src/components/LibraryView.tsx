@@ -184,7 +184,7 @@ export function NoteDetail({
           <span>Durata {formatDuration(note.durationMs)}</span>
           <span>Lingua {note.language}</span>
           <span>Whisper {note.models.whisper}</span>
-          <span>Ollama {note.models.ollama}</span>
+          <span>{note.models.provider ?? 'Ollama'} · {note.models.ollama}</span>
         </div>
       </div>
 

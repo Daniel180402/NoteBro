@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import type {
   DownloadProgress,
-  OllamaStatus,
   Settings,
   SystemAudioCapability,
   WhisperStatus
 } from '@shared/types'
 import { TEMPLATES, templateById } from '@shared/templates'
 import { formatBytes } from '../format'
+import { ProvidersSettings } from './ProvidersSettings'
 
 interface PullProgress {
   model: string
@@ -36,7 +36,6 @@ interface SettingsViewProps {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   whisper: WhisperStatus | null
-  ollama: OllamaStatus | null
   capability: SystemAudioCapability | null
   platform: string
   downloads: Record<string, DownloadProgress>
@@ -52,8 +51,8 @@ interface SettingsViewProps {
   busyModel: string | null
   onDownloadModel: (name: string) => void
   onDeleteModel: (name: string) => void
-  onStartOllama: () => void
-  onPullOllama: (model: string) => void
+  /** A summary service was added, edited or removed. */
+  onProvidersChanged: () => void
   onRefresh: () => void
   onOpenScreenSettings: () => void
   onOpenMicSettings: () => void
@@ -62,13 +61,10 @@ interface SettingsViewProps {
   onBack: () => void
 }
 
-const SUGGESTED_OLLAMA = ['qwen2.5:7b', 'llama3.2:3b', 'gemma2:9b', 'qwen2.5:14b']
-
 export function SettingsView({
   settings,
   onPatch,
   whisper,
-  ollama,
   capability,
   platform,
   downloads,
@@ -84,8 +80,7 @@ export function SettingsView({
   busyModel,
   onDownloadModel,
   onDeleteModel,
-  onStartOllama,
-  onPullOllama,
+  onProvidersChanged,
   onRefresh,
   onOpenScreenSettings,
   onOpenMicSettings,
@@ -93,8 +88,6 @@ export function SettingsView({
   onRestart,
   onBack
 }: SettingsViewProps): React.JSX.Element {
-  const [customModel, setCustomModel] = useState('')
-
   return (
     <>
       <button type="button" className="btn btn--ghost" onClick={onBack} style={{ marginBottom: 14 }}>
@@ -107,8 +100,8 @@ export function SettingsView({
         </button>
       </div>
       <p className="subtitle">
-        NoteBro funziona interamente in locale: whisper.cpp per la trascrizione, Ollama per il
-        riassunto.
+        NoteBro trascrive sempre in locale con whisper.cpp. Il riassunto lo scrive il servizio che
+        scegli: Ollama in locale per tenere tutto sul computer, oppure un servizio in rete.
       </p>
 
       <div className="card">
@@ -308,118 +301,7 @@ export function SettingsView({
         )}
       </div>
 
-      <div className="card">
-        <div className="card__head">
-          <h2>Riassunto — Ollama</h2>
-          <span className="pill">
-            <span className={`dot ${ollama?.running ? 'dot--ok' : 'dot--bad'}`} />
-            {ollama?.running ? 'Server attivo' : 'Server non raggiungibile'}
-          </span>
-        </div>
-
-        {!ollama?.running && (
-          <div className="banner banner--warn">
-            <div className="banner__body">
-              <div className="banner__title">Ollama non risponde</div>
-              <div className="banner__text">
-                {ollama?.cliFound
-                  ? 'Ollama è installato ma il server non è in esecuzione.'
-                  : 'Installa Ollama da ollama.com, poi torna qui.'}
-              </div>
-            </div>
-            {ollama?.cliFound && (
-              <button type="button" className="btn btn--primary" onClick={onStartOllama}>
-                Avvia Ollama
-              </button>
-            )}
-          </div>
-        )}
-
-        <label className="field">
-          <span>Indirizzo del server</span>
-          <input
-            type="text"
-            value={settings.ollamaBaseUrl}
-            onChange={(event) => onPatch({ ollamaBaseUrl: event.target.value })}
-          />
-        </label>
-
-        {ollama && ollama.models.length > 0 && (
-          <>
-            <h2 style={{ marginTop: 18 }}>Modelli disponibili</h2>
-            {ollama.models.map((model) => (
-              <div key={model.name} className="model-row">
-                <div className="model-row__body">
-                  <div className="model-row__name">
-                    {model.name}
-                    {settings.ollamaModel === model.name && (
-                      <span className="pill" style={{ marginLeft: 8 }}>
-                        in uso
-                      </span>
-                    )}
-                  </div>
-                  <div className="faint">{formatBytes(model.sizeBytes)}</div>
-                </div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onPatch({ ollamaModel: model.name })}
-                  disabled={settings.ollamaModel === model.name}
-                >
-                  Usa
-                </button>
-              </div>
-            ))}
-          </>
-        )}
-
-        <h2 style={{ marginTop: 18 }}>Scarica un altro modello</h2>
-        <div className="row" style={{ marginBottom: 10 }}>
-          <input
-            type="text"
-            placeholder="nome:tag, es. qwen2.5:7b"
-            value={customModel}
-            onChange={(event) => setCustomModel(event.target.value)}
-          />
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={() => onPullOllama(customModel.trim())}
-            disabled={!customModel.trim() || !ollama?.running || Boolean(pull && !pull.done)}
-          >
-            Scarica
-          </button>
-        </div>
-        <div className="row row--wrap">
-          {SUGGESTED_OLLAMA.filter(
-            (name) => !ollama?.models.some((model) => model.name === name)
-          ).map((name) => (
-            <button
-              key={name}
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => setCustomModel(name)}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-        {pull && !pull.done && (
-          <>
-            <p className="faint" style={{ marginBottom: 4, marginTop: 12 }}>
-              {pull.model}: {pull.status}
-            </p>
-            <div className="progress">
-              <div
-                className="progress__fill"
-                style={{
-                  width: `${pull.total > 0 ? Math.round((pull.completed / pull.total) * 100) : 0}%`
-                }}
-              />
-            </div>
-          </>
-        )}
-      </div>
+      <ProvidersSettings pull={pull} onChanged={onProvidersChanged} />
 
       {platform === 'darwin' && (
         <div className="card">

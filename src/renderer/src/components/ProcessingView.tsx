@@ -34,7 +34,7 @@ export function ProcessingView({
       ? [{ key: 'identifying-voices' as StageKey, label: 'Riconoscimento degli interlocutori' }]
       : []),
     { key: 'merging', label: 'Ricostruzione del dialogo' },
-    { key: 'summarizing', label: 'Riassunto con Ollama' }
+    { key: 'summarizing', label: 'Riassunto' }
   ]
 
   const currentIndex = progress

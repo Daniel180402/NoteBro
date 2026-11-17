@@ -4,7 +4,7 @@ import type {
   LiveStatus,
   MonitorSource,
   Segment,
-  OllamaStatus,
+  ProviderView,
   Settings,
   SystemAudioCapability,
   WhisperStatus
@@ -24,7 +24,10 @@ interface RecordViewProps {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   whisper: WhisperStatus | null
-  ollama: OllamaStatus | null
+  providers: ProviderView[]
+  /** The service for this recording only; changing it does not touch the default. */
+  summaryProviderId: string
+  onSummaryProvider: (id: string) => void
   capability: SystemAudioCapability | null
   microphones: MediaDeviceInfo[]
   /** Linux only: the outputs whose playback can be recorded. */
@@ -47,7 +50,9 @@ export function RecordView({
   settings,
   onPatch,
   whisper,
-  ollama,
+  providers,
+  summaryProviderId,
+  onSummaryProvider,
   capability,
   microphones,
   monitors,
@@ -332,22 +337,26 @@ export function RecordView({
             </select>
           </label>
           <label className="field" style={{ marginBottom: 0 }}>
-            <span>Riassunto (Ollama)</span>
-            <select
-              value={settings.ollamaModel}
-              onChange={(event) => onPatch({ ollamaModel: event.target.value })}
-              disabled={!ollama?.running || ollama.models.length === 0}
-            >
-              {(!ollama?.running || ollama.models.length === 0) && (
-                <option value="">Nessun modello disponibile</option>
-              )}
-              {ollama?.models.map((model) => (
-                <option key={model.name} value={model.name}>
-                  {model.name}
+            <span>Riassunto con</span>
+            <select value={summaryProviderId} onChange={(event) => onSummaryProvider(event.target.value)}>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                  {provider.model ? ` · ${provider.model}` : ''}
+                  {provider.remote ? ' (in rete)' : ''}
                 </option>
               ))}
             </select>
           </label>
+          {(() => {
+            const chosen = providers.find((provider) => provider.id === summaryProviderId)
+            return chosen?.remote ? (
+              <p className="faint" style={{ gridColumn: '1 / -1', margin: 0 }}>
+                Con "{chosen.name}" la trascrizione e i tuoi appunti vengono inviati a{' '}
+                <strong>{chosen.destination}</strong> per scrivere il riassunto.
+              </p>
+            ) : null
+          })()}
         </div>
       </div>
 

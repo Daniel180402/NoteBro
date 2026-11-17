@@ -13,6 +13,9 @@ import type {
   StartRecordingOptions,
   SystemAudioCapability,
   MonitorSource,
+  ProviderCheck,
+  ProviderConfig,
+  ProviderView,
   LiveStatus,
   WhisperStatus,
   OllamaStatus
@@ -69,11 +72,25 @@ const api = {
   },
 
   ollama: {
-    status: (): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:status'),
-    start: (): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:start'),
-    pull: (model: string): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:pull', model),
+    status: (baseUrl: string): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:status', baseUrl),
+    start: (baseUrl: string): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:start', baseUrl),
+    pull: (baseUrl: string, model: string): Promise<OllamaStatus> =>
+      ipcRenderer.invoke('ollama:pull', baseUrl, model),
     onPull: (callback: (progress: PullProgress) => void): (() => void) =>
       subscribe('ollama:pull', callback)
+  },
+
+  providers: {
+    list: (): Promise<{
+      providers: ProviderView[]
+      defaultProviderId: string
+      encryptionAvailable: boolean
+    }> => ipcRenderer.invoke('providers:list'),
+    /** `apiKey`: undefined keeps the stored key, '' removes it. */
+    save: (provider: ProviderConfig, apiKey?: string): Promise<Settings> =>
+      ipcRenderer.invoke('providers:save', provider, apiKey),
+    remove: (id: string): Promise<Settings> => ipcRenderer.invoke('providers:delete', id),
+    check: (id: string): Promise<ProviderCheck> => ipcRenderer.invoke('providers:check', id)
   },
 
   diarization: {
@@ -135,7 +152,7 @@ const api = {
       sessionId: string
       language: string
       whisperModel: string
-      ollamaModel: string
+      providerId?: string
       userNotes?: string
       template?: string
     }): Promise<ProcessResult> => ipcRenderer.invoke('process:run', options),
@@ -191,7 +208,7 @@ const api = {
       durationMs: number
       summary: string
       segments: Segment[]
-      models: { whisper: string; ollama: string }
+      models: { whisper: string; ollama: string; provider?: string }
       voiceNames?: Record<string, string>
       userNotes?: string
       template?: string

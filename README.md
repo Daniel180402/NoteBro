@@ -36,7 +36,7 @@ ciascuna dai un nome, che compare poi nella trascrizione e nel riassunto.
 | Cosa | Perché | Come |
 | --- | --- | --- |
 | Node.js 22+ | toolchain di build | `brew install node@22` |
-| Ollama | genera il riassunto | `brew install ollama` → [ollama.com](https://ollama.com) su Windows |
+| Ollama (o un altro servizio, vedi sotto) | genera il riassunto | `brew install ollama` → [ollama.com](https://ollama.com) su Windows |
 | Un modello Ollama | il cervello del riassunto | `ollama pull qwen2.5:7b` |
 | whisper.cpp | trascrive l'audio | `brew install whisper-cpp` (macOS) / vedi sotto (Windows) |
 | Un modello whisper | pesi per la trascrizione | si scarica dall'app, in Impostazioni |
@@ -157,6 +157,28 @@ secondo di ritardo.
 - *Riusa la diretta a fine call* salta la trascrizione finale e va subito al riassunto: più
   veloce, ma meno precisa. Se la diretta si è interrotta o è vuota, la call viene
   ritrascritta per intero.
+
+## Servizi per il riassunto
+
+La trascrizione resta sempre in locale. Il riassunto lo scrive un **servizio** a scelta,
+configurato in *Impostazioni → Riassunto — servizi*; se ne possono creare quanti si
+vuole, ciascuno con un nome proprio:
+
+| Tipo | Per cosa | Cosa serve |
+| --- | --- | --- |
+| Ollama | sul computer o su un altro in rete | indirizzo, modello |
+| Compatibile OpenAI | OpenRouter, Hermes, LM Studio, llama.cpp server, vLLM… | indirizzo, modello, chiave se richiesta |
+| API Anthropic | Claude a consumo | chiave API, modello (default `claude-opus-5-5`) |
+| Claude Code | Claude con il proprio abbonamento | il comando `claude` installato e autenticato |
+
+Uno è il **predefinito**; prima di registrare se ne può scegliere un altro solo per quella
+call. Le chiavi API stanno in `secrets.json`, cifrate con il portachiavi di sistema, e non
+arrivano mai all'interfaccia. Quando un servizio invia la trascrizione fuori dal computer,
+l'app lo dice esplicitamente (anche per i modelli `:cloud` di Ollama). Claude Code viene
+lanciato senza strumenti, senza impostazioni di progetto e in una cartella vuota.
+
+Chi aggiorna da una versione precedente ritrova il proprio Ollama come servizio
+"Ollama locale", predefinito, con lo stesso indirizzo e modello.
 
 ## Template per tipo di conversazione
 

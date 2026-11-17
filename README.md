@@ -141,6 +141,23 @@ comunque nel verbale.
 Restano anche salvati in chiaro accanto al riassunto, per rileggere cosa avevi
 annotato.
 
+## Trascrizione in diretta (opzionale)
+
+Spenta di default: la trascrizione avviene a fine call. Da *Impostazioni → Trascrizione in
+diretta* si può attivare la visualizzazione delle battute mentre si parla, con qualche
+secondo di ritardo.
+
+- NoteBro avvia `whisper-server` (parte della stessa build di `whisper-cli`) a inizio
+  registrazione e lo chiude alla fine; il modello resta caricato per tutta la call.
+- Ogni canale viene tagliato sulle pause (al massimo ogni 10 s) e inviato al server un
+  pezzo alla volta; i pezzi silenziosi non vengono inviati.
+- **Può pesare sulle prestazioni durante la riunione**: whisper gira insieme all'app della
+  videochiamata. Senza GPU conviene un modello piccolo, scelto a parte in *Modello per la
+  diretta*. Se il computer non sta al passo, la schermata lo segnala.
+- *Riusa la diretta a fine call* salta la trascrizione finale e va subito al riassunto: più
+  veloce, ma meno precisa. Se la diretta si è interrotta o è vuota, la call viene
+  ritrascritta per intero.
+
 ## Template per tipo di conversazione
 
 Un colloquio, una formazione e una call commerciale non vogliono le stesse sezioni. Il

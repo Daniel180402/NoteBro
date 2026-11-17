@@ -10,6 +10,8 @@ import type {
   SpeakerId,
   SystemAudioCapability,
   MonitorSource,
+  LiveStatus,
+  Segment,
   WhisperStatus
 } from '@shared/types'
 import { startCapture, listMicrophones, type CaptureHandle } from './audio/capture'
@@ -45,6 +47,8 @@ export function App(): React.JSX.Element {
   const [ollama, setOllama] = useState<OllamaStatus | null>(null)
   const [platform, setPlatform] = useState('')
   const [monitors, setMonitors] = useState<MonitorSource[]>([])
+  const [liveSegments, setLiveSegments] = useState<Segment[]>([])
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null)
   const [capability, setCapability] = useState<SystemAudioCapability | null>(null)
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([])
 
@@ -152,6 +156,10 @@ export function App(): React.JSX.Element {
     const offWarning = window.notebro.recorder.onWarning((message) => {
       setWarnings((previous) => (previous.includes(message) ? previous : [...previous, message]))
     })
+    const offLiveSegments = window.notebro.live.onSegments((segments) =>
+      setLiveSegments((previous) => [...previous, ...segments].sort((a, b) => a.from - b.from))
+    )
+    const offLiveStatus = window.notebro.live.onStatus(setLiveStatus)
     const offProgress = window.notebro.process.onProgress(setProgress)
     const offDownload = window.notebro.whisper.onDownload((payload) => {
       setDownloads((previous) => ({ ...previous, [payload.name]: payload }))
@@ -160,6 +168,8 @@ export function App(): React.JSX.Element {
     const offDiarization = window.notebro.diarization.onDownload(setDiarizationDownload)
     const offCompress = window.notebro.storage.onCompress(setCompressProgress)
     return () => {
+      offLiveSegments()
+      offLiveStatus()
       offCompress()
       offDiarization()
       offLevel()
@@ -275,6 +285,8 @@ export function App(): React.JSX.Element {
     setStarting(true)
     setWarnings([])
     setLiveNotes('')
+    setLiveSegments([])
+    setLiveStatus(null)
     setLevels({ me: 0, them: 0 })
     setSeen({ me: false, them: false })
     setReceiving({ me: false, them: false })
@@ -591,6 +603,9 @@ export function App(): React.JSX.Element {
               warnings={warnings}
               notes={liveNotes}
               onNotesChange={setLiveNotes}
+              liveEnabled={settings.liveTranscription}
+              liveSegments={liveSegments}
+              liveStatus={liveStatus}
               stopping={stopping}
               onPause={handlePause}
               onResume={handleResume}

@@ -217,6 +217,95 @@ export function SettingsView({
 
       <div className="card">
         <div className="card__head">
+          <h2>Trascrizione in diretta</h2>
+          {settings.liveTranscription && (
+            <span className="pill">
+              <span className={`dot ${whisper?.serverBinaryPath ? 'dot--ok' : 'dot--bad'}`} />
+              {whisper?.serverBinaryPath ? 'whisper-server trovato' : 'whisper-server mancante'}
+            </span>
+          )}
+        </div>
+        <p className="faint" style={{ marginTop: 0 }}>
+          Mostra la trascrizione mentre parli, con qualche secondo di ritardo. Di default è
+          spenta: la trascrizione avviene a fine call.
+        </p>
+        <div className="banner banner--warn">
+          <div className="banner__body">
+            <div className="banner__title">Può rallentare il computer durante la riunione</div>
+            <div className="banner__text">
+              whisper gira per tutta la durata della call, insieme all'app della videochiamata.
+              Senza una GPU, o con un modello grande, l'audio o il video della call possono
+              scattare e la trascrizione può accumulare ritardo. Per la diretta conviene un
+              modello piccolo (Base o Small).
+            </div>
+          </div>
+        </div>
+        <label
+          className={`toggle${settings.liveTranscription ? ' toggle--on' : ''}`}
+          style={{ marginBottom: 14 }}
+        >
+          <input
+            type="checkbox"
+            checked={settings.liveTranscription}
+            onChange={(event) => onPatch({ liveTranscription: event.target.checked })}
+          />
+          <span>
+            <span className="toggle__label">Trascrivi durante la call</span>
+            <span className="toggle__hint">
+              Usa whisper-server, che NoteBro avvia a inizio registrazione e chiude alla fine.
+            </span>
+          </span>
+        </label>
+
+        {settings.liveTranscription && !whisper?.serverBinaryPath && (
+          <p className="banner banner--warn" style={{ marginBottom: 14 }}>
+            Non trovo whisper-server: deve stare nella stessa cartella di whisper-cli o nel PATH.
+            Senza, la registrazione funziona lo stesso e la trascrizione avviene a fine call.
+          </p>
+        )}
+
+        {settings.liveTranscription && (
+          <>
+            <label className="field" style={{ marginBottom: 14 }}>
+              <span>Modello per la diretta</span>
+              <select
+                value={settings.liveWhisperModel}
+                onChange={(event) => onPatch({ liveWhisperModel: event.target.value })}
+              >
+                <option value="">Lo stesso della trascrizione finale</option>
+                {whisper?.models
+                  .filter((model) => model.installed)
+                  .map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {model.label}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label
+              className={`toggle${settings.reuseLiveTranscript ? ' toggle--on' : ''}`}
+              style={{ marginBottom: 0 }}
+            >
+              <input
+                type="checkbox"
+                checked={settings.reuseLiveTranscript}
+                onChange={(event) => onPatch({ reuseLiveTranscript: event.target.checked })}
+              />
+              <span>
+                <span className="toggle__label">Riusa la diretta a fine call</span>
+                <span className="toggle__hint">
+                  Salta la trascrizione finale e passa subito al riassunto. Più veloce, ma meno
+                  precisa: la diretta lavora a pezzi di pochi secondi. Se la diretta si è
+                  interrotta, la call viene comunque ritrascritta per intero.
+                </span>
+              </span>
+            </label>
+          </>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card__head">
           <h2>Riassunto — Ollama</h2>
           <span className="pill">
             <span className={`dot ${ollama?.running ? 'dot--ok' : 'dot--bad'}`} />

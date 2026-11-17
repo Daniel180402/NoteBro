@@ -99,6 +99,8 @@ export interface WhisperModelInfo {
 export interface WhisperStatus {
   available: boolean
   binaryPath: string | null
+  /** whisper-server, needed only for live transcription. */
+  serverBinaryPath: string | null
   source: 'settings' | 'bundled' | 'path' | 'none'
   models: WhisperModelInfo[]
 }
@@ -142,6 +144,17 @@ export interface Settings {
   /** Removes the speaker output from the mic signal; vital without headphones. */
   echoCancellation: boolean
   noiseSuppression: boolean
+  /** Show the transcript while recording, through whisper-server. Costs CPU/GPU during the call. */
+  liveTranscription: boolean
+  /** Model for the live transcript; empty means the same as whisperModel. */
+  liveWhisperModel: string
+  /** Skip the final transcription and keep the live one. */
+  reuseLiveTranscript: boolean
+}
+
+export interface LiveStatus {
+  state: 'off' | 'starting' | 'ready' | 'lagging' | 'error'
+  message: string
 }
 
 export interface StartRecordingOptions {

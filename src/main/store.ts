@@ -28,7 +28,10 @@ const DEFAULT_SETTINGS: Settings = {
   expectedSpeakers: 2,
   keepAudio: true,
   echoCancellation: true,
-  noiseSuppression: true
+  noiseSuppression: true,
+  liveTranscription: false,
+  liveWhisperModel: '',
+  reuseLiveTranscript: false
 }
 
 /** Writes via a temp file + rename so a crash can never truncate the library. */

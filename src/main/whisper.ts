@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { cpus } from 'node:os'
 import { createWriteStream, existsSync } from 'node:fs'
 import { readFile, rename, stat, unlink } from 'node:fs/promises'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { DownloadProgress, Segment, SpeakerId, WhisperStatus } from '@shared/types'
@@ -82,11 +82,33 @@ export async function resolveBinary(): Promise<{
   return { path: null, source: 'none' }
 }
 
+/** Names whisper.cpp's HTTP server has shipped under, newest first. */
+const SERVER_NAMES =
+  process.platform === 'win32'
+    ? ['whisper-server.exe', 'server.exe']
+    : ['whisper-server', 'whisper-cpp-server']
+
+/**
+ * The server binary for live transcription. It ships in the same build as
+ * whisper-cli, so the folder of the resolved CLI is the first place to look.
+ */
+export async function resolveServerBinary(): Promise<string | null> {
+  const { path } = await resolveBinary()
+  if (path) {
+    for (const name of SERVER_NAMES) {
+      const sibling = join(dirname(path), name)
+      if (existsSync(sibling)) return sibling
+    }
+  }
+  return searchPathFor(SERVER_NAMES)
+}
+
 export async function status(): Promise<WhisperStatus> {
   const { path, source } = await resolveBinary()
   return {
     available: path !== null,
     binaryPath: path,
+    serverBinaryPath: await resolveServerBinary(),
     source,
     models: MODELS.map((model) => ({
       name: model.name,

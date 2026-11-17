@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RecordingResult, SpeakerId, StartRecordingOptions } from '@shared/types'
+import type {
+  LiveStatus,
+  RecordingResult,
+  Segment,
+  SpeakerId,
+  StartRecordingOptions
+} from '@shared/types'
+import { LiveTranscriber, defaultThreads } from './live'
 import { logLine } from './log'
 import { sessionDir } from './paths'
 import { getSettings } from './store'
@@ -27,6 +34,8 @@ export interface CompletedSession {
   language: string
   durationMs: number
   channels: CompletedChannel[]
+  /** The live transcript being completed, when it is meant to replace the final pass. */
+  liveTranscript?: Promise<Segment[] | null>
 }
 
 interface ActiveSession {
@@ -39,12 +48,16 @@ interface ActiveSession {
   /** Streams whose leading silence offset has already been written. */
   aligned: Set<SpeakerId>
   systemStream: SystemAudioStream | null
+  live: LiveTranscriber | null
+  reuseLive: boolean
   warnings: string[]
 }
 
 export interface RecorderHooks {
   onLevel: (speaker: SpeakerId, level: number) => void
   onWarning: (message: string) => void
+  onLiveSegments: (segments: Segment[]) => void
+  onLiveStatus: (status: LiveStatus) => void
 }
 
 const completedSessions = new Map<string, CompletedSession>()
@@ -78,6 +91,7 @@ export async function start(
   if (active) throw new Error('Una registrazione è già in corso.')
 
   const id = randomUUID()
+  const settings = await getSettings()
   const session: ActiveSession = {
     id,
     language: options.language,
@@ -87,6 +101,8 @@ export async function start(
     writers: new Map(),
     aligned: new Set(),
     systemStream: null,
+    live: null,
+    reuseLive: settings.liveTranscription && settings.reuseLiveTranscript,
     warnings: []
   }
 
@@ -104,6 +120,23 @@ export async function start(
     session.writers.set('them', writer)
   }
 
+  if (settings.liveTranscription) {
+    const prompt = [settings.userName, settings.vocabulary]
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join(', ')
+      .slice(0, 400)
+    // Boots in the background: audio that arrives meanwhile waits in the chunkers.
+    session.live = new LiveTranscriber({
+      model: settings.liveWhisperModel || settings.whisperModel,
+      language: options.language,
+      threads: defaultThreads(settings.whisperThreads),
+      prompt,
+      onSegments: hooks.onLiveSegments,
+      onStatus: hooks.onLiveStatus
+    })
+  }
+
   active = session
   logLine(
     'recorder',
@@ -112,7 +145,6 @@ export async function start(
 
   if (nativeSystemAudio) {
     await ensureScreenPermission()
-    const { systemInputDeviceId } = await getSettings()
     session.systemStream = startSystemAudio({
       onReady: () => undefined,
       onError: (message) => {
@@ -124,7 +156,7 @@ export async function start(
         const level = peakOf(chunk)
         throttleLevel('them', level, hooks)
       }
-    }, systemInputDeviceId)
+    }, settings.systemInputDeviceId)
   }
 
   return { sessionId: id, systemAudioHandledInMain: nativeSystemAudio }
@@ -148,8 +180,13 @@ export async function writePcm(speaker: SpeakerId, chunk: Buffer): Promise<void>
   if (!session.aligned.has(speaker)) {
     session.aligned.add(speaker)
     // Pad the head so every channel shares the same t = 0.
-    const offset = Date.now() - session.startedAt - session.pausedTotal
-    await writer.writeSilence(Math.max(0, offset))
+    const offset = Math.max(0, Date.now() - session.startedAt - session.pausedTotal)
+    // Fed before any await, so the live transcript sees chunks in arrival order.
+    session.live?.begin(speaker, offset)
+    session.live?.feed(speaker, chunk)
+    await writer.writeSilence(offset)
+  } else {
+    session.live?.feed(speaker, chunk)
   }
 
   await writer.write(chunk)
@@ -207,11 +244,20 @@ export async function stop(): Promise<RecordingResult> {
     ...channels.map((channel) => channel.durationMs)
   )
 
+  let liveTranscript: Promise<Segment[] | null> | undefined
+  if (session.live && session.reuseLive && session.live.healthy) {
+    // Completed in the background; the pipeline waits for it instead of re-transcribing.
+    liveTranscript = session.live.finish().catch(() => null)
+  } else {
+    session.live?.abort()
+  }
+
   completedSessions.set(session.id, {
     id: session.id,
     language: session.language,
     durationMs,
-    channels
+    channels,
+    liveTranscript
   })
 
   for (const stream of streams) {
@@ -232,6 +278,7 @@ export async function cancel(): Promise<void> {
   if (!session) return
   active = null
   session.systemStream?.stop()
+  session.live?.abort()
   for (const writer of session.writers.values()) await writer.close().catch(() => undefined)
   discard(session.id)
 }

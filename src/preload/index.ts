@@ -13,6 +13,7 @@ import type {
   StartRecordingOptions,
   SystemAudioCapability,
   MonitorSource,
+  LiveStatus,
   WhisperStatus,
   OllamaStatus
 } from '@shared/types'
@@ -120,6 +121,13 @@ const api = {
       subscribe('recorder:level', callback),
     onWarning: (callback: (message: string) => void): (() => void) =>
       subscribe('recorder:warning', callback)
+  },
+
+  live: {
+    onSegments: (callback: (segments: Segment[]) => void): (() => void) =>
+      subscribe('live:segments', callback),
+    onStatus: (callback: (status: LiveStatus) => void): (() => void) =>
+      subscribe('live:status', callback)
   },
 
   process: {

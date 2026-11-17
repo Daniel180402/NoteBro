@@ -162,7 +162,9 @@ function registerIpc(): void {
   ipcMain.handle('recorder:start', (_event, options: StartRecordingOptions) =>
     recorder.start(options, {
       onLevel: (stream, level) => send('recorder:level', { stream, level }),
-      onWarning: (message) => send('recorder:warning', message)
+      onWarning: (message) => send('recorder:warning', message),
+      onLiveSegments: (segments) => send('live:segments', segments),
+      onLiveStatus: (status) => send('live:status', status)
     })
   )
   ipcMain.on('recorder:pcm', (_event, speaker: SpeakerId, data: Uint8Array) => {

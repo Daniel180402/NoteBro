@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import type { ProcessProgress, ProcessResult, Segment, SpeakerId } from '@shared/types'
 import { diarize } from './diarization'
+import { logLine } from './log'
 import { mixToMono } from './mixdown'
 import { sessionDir } from './paths'
 import { getCompleted } from './recorder'
@@ -56,9 +57,19 @@ export async function run(options: RunOptions): Promise<ProcessResult> {
         }).catch(() => [])
       : null
 
-  const segments: Segment[] = []
+  let live: Segment[] | null = null
+  if (session.liveTranscript) {
+    report({ stage: 'preparing', message: 'Completamento della trascrizione in diretta…' })
+    live = await session.liveTranscript
+    // An empty or broken live transcript is no reason to lose the call: redo it.
+    if (live && live.length === 0) live = null
+    logLine('pipeline', live ? `trascrizione in diretta riusata: ${live.length} segmenti` : 'trascrizione in diretta non utilizzabile, rifaccio la trascrizione')
+  }
+
+  const segments: Segment[] = live ? [...live] : []
   // Transcribe the two channels independently so every line keeps its speaker.
-  for (const channel of session.channels) {
+  // Skipped when the live transcript came through whole.
+  for (const channel of live ? [] : session.channels) {
     if (options.signal?.aborted) throw new Error('Elaborazione annullata.')
     const who = settings.speakerLabels[channel.speaker]
     report({

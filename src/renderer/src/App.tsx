@@ -3,12 +3,16 @@ import type {
   DownloadProgress,
   Library,
   Note,
-  OllamaStatus,
+  ProviderCheck,
+  ProviderView,
   ProcessProgress,
   ProcessResult,
   Settings,
   SpeakerId,
   SystemAudioCapability,
+  MonitorSource,
+  LiveStatus,
+  Segment,
   WhisperStatus
 } from '@shared/types'
 import { startCapture, listMicrophones, type CaptureHandle } from './audio/capture'
@@ -41,8 +45,14 @@ export function App(): React.JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [library, setLibrary] = useState<Library>({ folders: [], notes: [] })
   const [whisper, setWhisper] = useState<WhisperStatus | null>(null)
-  const [ollama, setOllama] = useState<OllamaStatus | null>(null)
+  const [providers, setProviders] = useState<ProviderView[]>([])
+  /** Summary service for the next recording; starts as the default, never saved. */
+  const [summaryProviderId, setSummaryProviderId] = useState('')
+  const [providerCheck, setProviderCheck] = useState<ProviderCheck | null>(null)
   const [platform, setPlatform] = useState('')
+  const [monitors, setMonitors] = useState<MonitorSource[]>([])
+  const [liveSegments, setLiveSegments] = useState<Segment[]>([])
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null)
   const [capability, setCapability] = useState<SystemAudioCapability | null>(null)
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([])
 
@@ -103,19 +113,32 @@ export function App(): React.JSX.Element {
   const pausedAt = useRef<number | null>(null)
 
   const refreshEngines = useCallback(async (): Promise<void> => {
-    const [whisperStatus, ollamaStatus, info, diarizationStatus] = await Promise.all([
+    const [whisperStatus, providerList, info, diarizationStatus] = await Promise.all([
       window.notebro.whisper.status(),
-      window.notebro.ollama.status(),
+      window.notebro.providers.list(),
       window.notebro.system.info(),
       window.notebro.diarization.status()
     ])
     setStorage(await window.notebro.storage.report())
     setWhisper(whisperStatus)
-    setOllama(ollamaStatus)
+    setProviders(providerList.providers)
+    // Keep a per-recording choice while it still exists; otherwise follow the default.
+    setSummaryProviderId((current) =>
+      providerList.providers.some((provider) => provider.id === current)
+        ? current
+        : providerList.defaultProviderId
+    )
+    setProviderCheck(null)
     setPlatform(info.platform)
     setCapability(info.capability)
+    setMonitors(info.monitors)
     setDiarization(diarizationStatus)
   }, [])
+
+  // A different output has to prove itself again before the next recording.
+  useEffect(() => {
+    systemAudioVerified.current = false
+  }, [settings?.systemInputDeviceId])
 
   // Initial load.
   useEffect(() => {
@@ -144,6 +167,10 @@ export function App(): React.JSX.Element {
     const offWarning = window.notebro.recorder.onWarning((message) => {
       setWarnings((previous) => (previous.includes(message) ? previous : [...previous, message]))
     })
+    const offLiveSegments = window.notebro.live.onSegments((segments) =>
+      setLiveSegments((previous) => [...previous, ...segments].sort((a, b) => a.from - b.from))
+    )
+    const offLiveStatus = window.notebro.live.onStatus(setLiveStatus)
     const offProgress = window.notebro.process.onProgress(setProgress)
     const offDownload = window.notebro.whisper.onDownload((payload) => {
       setDownloads((previous) => ({ ...previous, [payload.name]: payload }))
@@ -152,6 +179,8 @@ export function App(): React.JSX.Element {
     const offDiarization = window.notebro.diarization.onDownload(setDiarizationDownload)
     const offCompress = window.notebro.storage.onCompress(setCompressProgress)
     return () => {
+      offLiveSegments()
+      offLiveStatus()
       offCompress()
       offDiarization()
       offLevel()
@@ -181,21 +210,42 @@ export function App(): React.JSX.Element {
 
   // Fill in sensible model choices once we know what is installed.
   useEffect(() => {
-    if (!settings || !whisper || !ollama) return
+    if (!settings || !whisper) return
     const installed = whisper.models.filter((model) => model.installed).map((model) => model.name)
     const changes: Partial<Settings> = {}
     if (installed.length > 0 && !installed.includes(settings.whisperModel)) {
       changes.whisperModel = installed.includes('small') ? 'small' : installed[0]
     }
-    const names = ollama.models.map((model) => model.name)
-    if (names.length > 0 && !names.includes(settings.ollamaModel)) {
-      const preferred = PREFERRED_OLLAMA.map((prefix) =>
-        names.find((name) => name.startsWith(prefix))
-      ).find(Boolean)
-      changes.ollamaModel = preferred ?? names[0]
-    }
     if (Object.keys(changes).length > 0) void patch(changes)
-  }, [settings, whisper, ollama, patch])
+  }, [settings, whisper, patch])
+
+  const summaryProvider = providers.find((provider) => provider.id === summaryProviderId) ?? null
+
+  // Is the service chosen for the next recording usable? Re-asked when it changes.
+  useEffect(() => {
+    if (!summaryProviderId) return
+    let current = true
+    void window.notebro.providers.check(summaryProviderId).then((result) => {
+      if (current) setProviderCheck(result)
+    })
+    return () => {
+      current = false
+    }
+  }, [summaryProviderId, providers])
+
+  // An Ollama with models but none chosen: pick a sensible one, as before providers.
+  useEffect(() => {
+    if (!summaryProvider || summaryProvider.kind !== 'ollama' || summaryProvider.model) return
+    const names = providerCheck?.models ?? []
+    if (names.length === 0) return
+    const preferred = PREFERRED_OLLAMA.map((prefix) =>
+      names.find((name) => name.startsWith(prefix) && !/:cloud$/.test(name))
+    ).find(Boolean)
+    const { hasApiKey: _key, remote: _remote, destination: _destination, ...config } = summaryProvider
+    void window.notebro.providers
+      .save({ ...config, model: preferred ?? names[0] })
+      .then(() => refreshEngines())
+  }, [summaryProvider, providerCheck, refreshEngines])
 
   const blockers = useMemo<Blocker[]>(() => {
     if (!settings) return []
@@ -208,7 +258,9 @@ export function App(): React.JSX.Element {
         text:
           platform === 'darwin'
             ? 'Installa whisper.cpp con "brew install whisper-cpp", poi ricontrolla dalle impostazioni.'
-            : 'Indica il percorso di whisper-cli.exe nelle impostazioni.',
+            : platform === 'linux'
+              ? 'Installa whisper.cpp dal gestore di pacchetti (deve fornire whisper-cli) oppure indicane il percorso nelle impostazioni.'
+              : 'Indica il percorso di whisper-cli.exe nelle impostazioni.',
         action: { label: 'Impostazioni', run: () => setScreen('settings') }
       })
     } else if (whisper && installed.length === 0) {
@@ -219,26 +271,20 @@ export function App(): React.JSX.Element {
       })
     }
 
-    if (ollama && !ollama.running) {
+    if (summaryProvider && providerCheck && !providerCheck.ok) {
       found.push({
-        title: 'Ollama non è in esecuzione',
-        text: ollama.cliFound
-          ? 'Serve per generare il riassunto in locale.'
-          : 'Installa Ollama da ollama.com per generare i riassunti.',
-        action: ollama.cliFound
+        title: `Il riassunto con "${summaryProvider.name}" non è disponibile`,
+        text: `${providerCheck.detail} Scegli un altro servizio qui sotto o sistemalo nelle impostazioni.`,
+        action: providerCheck.canStart
           ? {
               label: 'Avvia Ollama',
               run: () => {
-                void window.notebro.ollama.start().then(setOllama)
+                void window.notebro.ollama
+                  .start(summaryProvider.baseUrl)
+                  .then(() => refreshEngines())
               }
             }
           : { label: 'Impostazioni', run: () => setScreen('settings') }
-      })
-    } else if (ollama && ollama.models.length === 0) {
-      found.push({
-        title: 'Nessun modello di riassunto',
-        text: 'Scarica un modello in Ollama, per esempio qwen2.5:7b.',
-        action: { label: 'Impostazioni', run: () => setScreen('settings') }
       })
     }
 
@@ -258,13 +304,15 @@ export function App(): React.JSX.Element {
     }
 
     return found
-  }, [settings, whisper, ollama, capability, platform])
+  }, [settings, whisper, summaryProvider, providerCheck, capability, platform, refreshEngines])
 
   const handleStart = async (): Promise<void> => {
     if (!settings) return
     setStarting(true)
     setWarnings([])
     setLiveNotes('')
+    setLiveSegments([])
+    setLiveStatus(null)
     setLevels({ me: 0, them: 0 })
     setSeen({ me: false, them: false })
     setReceiving({ me: false, them: false })
@@ -273,7 +321,10 @@ export function App(): React.JSX.Element {
     try {
       // Prove the system-audio path delivers samples before committing to a
       // recording: otherwise a dead channel only surfaces once it is too late.
-      if (settings.captureSystem && platform === 'darwin' && !systemAudioVerified.current) {
+      const probesSystemAudio =
+        platform === 'darwin' ||
+        (capability?.mode === 'linux-pulse-monitor' && capability.available)
+      if (settings.captureSystem && probesSystemAudio && !systemAudioVerified.current) {
         const probe = await window.notebro.system.testSystemAudio()
         if (!probe.ok || probe.bytes === 0) {
           setPreflight({
@@ -341,11 +392,13 @@ export function App(): React.JSX.Element {
           sessionId: id,
           language,
           whisperModel: settings.whisperModel,
-          ollamaModel: settings.ollamaModel,
+          providerId: summaryProviderId,
           userNotes,
           template: settings.template
         })
         setResult(outcome)
+        // The choice was for this recording only: the next one starts from the default.
+        void window.notebro.providers.list().then((list) => setSummaryProviderId(list.defaultProviderId))
         setScreen('result')
       } catch (error) {
         setProcessError(error instanceof Error ? error.message : String(error))
@@ -492,7 +545,11 @@ export function App(): React.JSX.Element {
         library={library}
         selection={selection}
         whisper={whisper}
-        ollama={ollama}
+        summary={
+          summaryProvider
+            ? { name: summaryProvider.name, ok: providerCheck?.ok ?? null, remote: summaryProvider.remote }
+            : null
+        }
         busy={recordingActive || screen === 'processing'}
         pendingResult={result !== null && screen !== 'result'}
         onResumeResult={() => setScreen('result')}
@@ -530,9 +587,12 @@ export function App(): React.JSX.Element {
               settings={settings}
               onPatch={(changes) => void patch(changes)}
               whisper={whisper}
-              ollama={ollama}
+              providers={providers}
+              summaryProviderId={summaryProviderId}
+              onSummaryProvider={setSummaryProviderId}
               capability={capability}
               microphones={microphones}
+              monitors={monitors}
               blockers={blockers}
               starting={starting}
               testing={testing}
@@ -577,6 +637,9 @@ export function App(): React.JSX.Element {
               warnings={warnings}
               notes={liveNotes}
               onNotesChange={setLiveNotes}
+              liveEnabled={settings.liveTranscription}
+              liveSegments={liveSegments}
+              liveStatus={liveStatus}
               stopping={stopping}
               onPause={handlePause}
               onResume={handleResume}
@@ -686,7 +749,6 @@ export function App(): React.JSX.Element {
               settings={settings}
               onPatch={(changes) => void patch(changes)}
               whisper={whisper}
-              ollama={ollama}
               capability={capability}
               platform={platform}
               downloads={downloads}
@@ -736,18 +798,7 @@ export function App(): React.JSX.Element {
               onDeleteModel={(name) => {
                 void window.notebro.whisper.deleteModel(name).then(setWhisper)
               }}
-              onStartOllama={() => {
-                void window.notebro.ollama
-                  .start()
-                  .then(setOllama)
-                  .catch((error: Error) => setFatal(error.message))
-              }}
-              onPullOllama={(model) => {
-                void window.notebro.ollama
-                  .pull(model)
-                  .then(setOllama)
-                  .catch((error: Error) => setFatal(error.message))
-              }}
+              onProvidersChanged={() => void refreshEngines()}
               onRefresh={() => void refreshEngines()}
               onOpenScreenSettings={() =>
                 void window.notebro.system.openScreenRecordingSettings()

@@ -16,6 +16,7 @@
     "build": "electron-vite build",
     "dist:mac": "npm run cert:mac && npm run native:mac && npm run build && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
     "test": "node tests/run.mjs",
     "test:integration": "node tests/run.mjs --integration",
     "cert:mac": "node scripts/make-signing-cert.mjs"
@@ -38,6 +39,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
     "@evan/opus": "^1.0.3",
     "sherpa-onnx-node": "^1.13.8",
     "webm-muxer": "^5.1.4"

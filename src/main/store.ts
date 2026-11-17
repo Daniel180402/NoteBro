@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, rmSync } from 'node:fs'
-import { copyFile, readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { cp, copyFile, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DEFAULT_TEMPLATE } from '@shared/templates'
 import type { Folder, Library, Note, NoteMeta, Segment, Settings } from '@shared/types'
 import { wavToWebm } from './compress'
 import { logLine } from './log'
 import { mixToMono } from './mixdown'
-import { libraryFile, noteDir, settingsFile } from './paths'
+import { noteFolderName, uniqueName } from './naming'
+import { defaultNotesRoot, legacyNoteDir, libraryFile, settingsFile } from './paths'
 
 const DEFAULT_SETTINGS: Settings = {
   language: 'it',
@@ -18,8 +19,8 @@ const DEFAULT_SETTINGS: Settings = {
   whisperModel: 'small',
   whisperBinaryPath: '',
   whisperThreads: 0,
-  ollamaModel: '',
-  ollamaBaseUrl: 'http://127.0.0.1:11434',
+  providers: [],
+  defaultProviderId: '',
   speakerLabels: { me: 'Io', them: 'Interlocutore' },
   userName: '',
   vocabulary: '',
@@ -28,7 +29,12 @@ const DEFAULT_SETTINGS: Settings = {
   expectedSpeakers: 2,
   keepAudio: true,
   echoCancellation: true,
-  noiseSuppression: true
+  noiseSuppression: true,
+  liveTranscription: false,
+  liveWhisperModel: '',
+  reuseLiveTranscript: false,
+  notesDirectory: '',
+  noteNaming: 'title'
 }
 
 /** Writes via a temp file + rename so a crash can never truncate the library. */
@@ -46,28 +52,164 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+/** Settings written before providers existed kept a single Ollama in two fields. */
+interface LegacySettings {
+  ollamaModel?: string
+  ollamaBaseUrl?: string
+}
+
+export const LOCAL_OLLAMA_ID = 'ollama-locale'
+
+function withProviders(stored: Partial<Settings> & LegacySettings): Pick<Settings, 'providers' | 'defaultProviderId'> {
+  const providers =
+    stored.providers && stored.providers.length > 0
+      ? stored.providers
+      : [
+          {
+            id: LOCAL_OLLAMA_ID,
+            name: 'Ollama locale',
+            kind: 'ollama' as const,
+            baseUrl: stored.ollamaBaseUrl || 'http://127.0.0.1:11434',
+            model: stored.ollamaModel ?? '',
+            contextLength: 0,
+            cliPath: ''
+          }
+        ]
+  const defaultProviderId = providers.some((provider) => provider.id === stored.defaultProviderId)
+    ? (stored.defaultProviderId as string)
+    : providers[0].id
+  return { providers, defaultProviderId }
+}
+
 export async function getSettings(): Promise<Settings> {
-  const stored = await readJson<Partial<Settings>>(settingsFile(), {})
+  const stored = await readJson<Partial<Settings> & LegacySettings>(settingsFile(), {})
+  const { ollamaModel: _model, ollamaBaseUrl: _url, ...current } = stored
   return {
     ...DEFAULT_SETTINGS,
-    ...stored,
+    ...current,
+    ...withProviders(stored),
     speakerLabels: { ...DEFAULT_SETTINGS.speakerLabels, ...(stored.speakerLabels ?? {}) }
   }
 }
 
 export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
   const next = { ...(await getSettings()), ...patch }
-  await writeAtomic(settingsFile(), JSON.stringify(next, null, 2))
+  // Mirror the default Ollama into the fields older versions read, so going
+  // back to one keeps the summary working.
+  const fallback =
+    next.providers.find((provider) => provider.id === next.defaultProviderId && provider.kind === 'ollama') ??
+    next.providers.find((provider) => provider.kind === 'ollama')
+  const legacy: LegacySettings = fallback ? { ollamaBaseUrl: fallback.baseUrl, ollamaModel: fallback.model } : {}
+  await writeAtomic(settingsFile(), JSON.stringify({ ...next, ...legacy }, null, 2))
   return next
 }
 
+/** Note id → folder, so synchronous callers (the audio protocol) need no disk read. */
+const dirCache = new Map<string, string>()
+let dirCacheLoaded = false
+
+function remember(library: Library): void {
+  dirCache.clear()
+  for (const note of library.notes) dirCache.set(note.id, note.dir ?? legacyNoteDir(note.id))
+  dirCacheLoaded = true
+}
+
 export async function getLibrary(): Promise<Library> {
-  return readJson<Library>(libraryFile(), { folders: [], notes: [] })
+  const library = await readJson<Library>(libraryFile(), { folders: [], notes: [] })
+  remember(library)
+  return library
 }
 
 async function saveLibrary(library: Library): Promise<Library> {
   await writeAtomic(libraryFile(), JSON.stringify(library, null, 2))
+  remember(library)
   return library
+}
+
+/** The folder of a saved note, wherever it was filed. */
+export function noteDirFor(id: string): string {
+  if (!dirCacheLoaded) {
+    try {
+      remember(JSON.parse(readFileSync(libraryFile(), 'utf8')) as Library)
+    } catch {
+      dirCacheLoaded = true
+    }
+  }
+  return dirCache.get(id) ?? legacyNoteDir(id)
+}
+
+export function notesRoot(settings: Settings): string {
+  const custom = settings.notesDirectory.trim()
+  return custom ? resolve(custom) : defaultNotesRoot()
+}
+
+/**
+ * A free folder for a note titled `title`, under the configured root and
+ * named by the configured convention. `current` counts as free, so a note can
+ * keep its own name.
+ */
+async function allocateNoteDir(title: string, current?: string): Promise<string> {
+  const settings = await getSettings()
+  const parent = notesRoot(settings)
+  mkdirSync(parent, { recursive: true })
+  const name = uniqueName(noteFolderName(title, settings.noteNaming), settings.noteNaming, (candidate) => {
+    const path = join(parent, candidate)
+    return path !== current && existsSync(path)
+  })
+  return join(parent, name)
+}
+
+/** rename(), or copy-then-delete when the target is on another disk. */
+async function moveDir(from: string, to: string): Promise<void> {
+  mkdirSync(dirname(to), { recursive: true })
+  try {
+    await rename(from, to)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+    await cp(from, to, { recursive: true, errorOnExist: true, force: false })
+    await rm(from, { recursive: true, force: true })
+  }
+}
+
+/** Refuses to touch anything that is not plainly a single note's folder. */
+function isNoteFolder(dir: string, roots: string[]): boolean {
+  const settingsRoots = [defaultNotesRoot(), ...roots]
+  return (
+    basename(dir).length > 0 &&
+    dirname(dir) !== dir &&
+    !settingsRoots.includes(dir) &&
+    existsSync(join(dir, 'summary.md'))
+  )
+}
+
+/**
+ * Moves every note into the configured folder and renames it by the configured
+ * convention. Notes already in place are left alone.
+ */
+export async function reorganizeNotes(): Promise<{ library: Library; moved: number; failed: string[] }> {
+  const library = await getLibrary()
+  let moved = 0
+  const failed: string[] = []
+  for (const note of library.notes) {
+    const current = note.dir ?? legacyNoteDir(note.id)
+    if (!existsSync(current)) continue
+    const target = await allocateNoteDir(note.title, current)
+    if (target === current) {
+      note.dir = current
+      continue
+    }
+    try {
+      await moveDir(current, target)
+      note.dir = target
+      moved += 1
+      // Persist after each move, so an interruption never loses track of a note.
+      await saveLibrary(library)
+    } catch (error) {
+      logLine('store', `spostamento di "${note.title}" fallito: ${(error as Error).message}`)
+      failed.push(note.title)
+    }
+  }
+  return { library: await saveLibrary(library), moved, failed }
 }
 
 export async function createFolder(
@@ -105,7 +247,7 @@ export interface SaveNoteInput {
   durationMs: number
   summary: string
   segments: Segment[]
-  models: { whisper: string; ollama: string }
+  models: { whisper: string; ollama: string; provider?: string }
   /** Names given to the detected remote voices, keyed by voice index. */
   voiceNames?: Record<string, string>
   userNotes?: string
@@ -129,7 +271,8 @@ function excerptOf(summary: string): string {
 
 export async function saveNote(input: SaveNoteInput): Promise<{ library: Library; note: Note }> {
   const id = randomUUID()
-  const dir = noteDir(id)
+  const dir = await allocateNoteDir(input.title.trim() || 'Senza titolo')
+  mkdirSync(dir, { recursive: true })
   const speakers = [...new Set(input.segments.map((segment) => segment.speaker))]
 
   await writeFile(join(dir, 'summary.md'), input.summary, 'utf8')
@@ -150,6 +293,7 @@ export async function saveNote(input: SaveNoteInput): Promise<{ library: Library
 
   const meta: NoteMeta = {
     id,
+    dir,
     folderId: input.folderId,
     title: input.title.trim() || 'Senza titolo',
     language: input.language,
@@ -178,7 +322,7 @@ export async function saveNote(input: SaveNoteInput): Promise<{ library: Library
 export async function compressNoteAudio(
   id: string
 ): Promise<{ beforeBytes: number; afterBytes: number } | null> {
-  const dir = noteDir(id)
+  const dir = noteDirFor(id)
   const wav = join(dir, 'audio.wav')
   if (!existsSync(wav)) return null
 
@@ -200,7 +344,7 @@ export async function compressNoteAudio(
 export async function notesToCompress(): Promise<string[]> {
   const library = await getLibrary()
   return library.notes
-    .filter((note) => note.hasAudio && existsSync(join(noteDir(note.id), 'audio.wav')))
+    .filter((note) => note.hasAudio && existsSync(join(noteDirFor(note.id), 'audio.wav')))
     .map((note) => note.id)
 }
 
@@ -208,7 +352,7 @@ export async function getNote(id: string): Promise<Note | null> {
   const library = await getLibrary()
   const meta = library.notes.find((note) => note.id === id)
   if (!meta) return null
-  const dir = noteDir(id)
+  const dir = noteDirFor(id)
   const summary = await readFile(join(dir, 'summary.md'), 'utf8').catch(() => '')
   const segments = await readJson<Segment[]>(join(dir, 'transcript.json'), [])
   return { ...meta, summary, segments }
@@ -226,11 +370,26 @@ export async function updateNote(
   const library = await getLibrary()
   const meta = library.notes.find((note) => note.id === id)
   if (!meta) return library
-  if (patch.title !== undefined) meta.title = patch.title.trim() || meta.title
+  if (patch.title !== undefined) {
+    const title = patch.title.trim() || meta.title
+    // Keep the folder name in step with the title, for notes filed by name.
+    if (title !== meta.title && meta.dir && existsSync(meta.dir)) {
+      const target = await allocateNoteDir(title, meta.dir)
+      if (dirname(target) === dirname(meta.dir) && target !== meta.dir) {
+        await moveDir(meta.dir, target).then(
+          () => {
+            meta.dir = target
+          },
+          (error: Error) => logLine('store', `rinomina della cartella fallita: ${error.message}`)
+        )
+      }
+    }
+    meta.title = title
+  }
   if (patch.folderId !== undefined) meta.folderId = patch.folderId
   if (patch.voiceNames !== undefined) meta.voiceNames = patch.voiceNames
   if (patch.summary !== undefined) {
-    await writeFile(join(noteDir(id), 'summary.md'), patch.summary, 'utf8')
+    await writeFile(join(noteDirFor(id), 'summary.md'), patch.summary, 'utf8')
     meta.excerpt = excerptOf(patch.summary)
   }
   return saveLibrary(library)
@@ -239,8 +398,8 @@ export async function updateNote(
 export async function deleteNote(id: string): Promise<Library> {
   const library = await getLibrary()
   library.notes = library.notes.filter((note) => note.id !== id)
-  const dir = join(noteDir(id))
-  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+  const dir = noteDirFor(id)
+  if (existsSync(dir) && isNoteFolder(dir, [notesRoot(await getSettings())])) rmSync(dir, { recursive: true, force: true })
   return saveLibrary(library)
 }
 

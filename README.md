@@ -1,6 +1,6 @@
 # NoteBro
 
-App desktop per macOS e Windows che ascolta **il tuo microfono e l'audio di sistema**
+App desktop per macOS, Windows e Linux che ascolta **il tuo microfono e l'audio di sistema**
 durante una call o un colloquio, e al termine produce un **riassunto strutturato**
 che puoi nominare e archiviare in cartelle.
 
@@ -8,7 +8,8 @@ Tutto gira in locale: nessun audio e nessun testo lascia il computer.
 
 - **Trascrizione** — [whisper.cpp](https://github.com/ggml-org/whisper.cpp), accelerato su GPU
 - **Riassunto** — [Ollama](https://ollama.com) con il modello che preferisci
-- **Audio di sistema** — ScreenCaptureKit su macOS, loopback di Chromium su Windows.
+- **Audio di sistema** — ScreenCaptureKit su macOS, loopback di Chromium su Windows,
+  monitor di PulseAudio/PipeWire (`parec`) su Linux.
   Nessun driver virtuale tipo BlackHole.
 - **Riconoscimento degli interlocutori** — [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx),
   per distinguere più persone collegate (sperimentale, spento di default)
@@ -35,7 +36,7 @@ ciascuna dai un nome, che compare poi nella trascrizione e nel riassunto.
 | Cosa | Perché | Come |
 | --- | --- | --- |
 | Node.js 22+ | toolchain di build | `brew install node@22` |
-| Ollama | genera il riassunto | `brew install ollama` → [ollama.com](https://ollama.com) su Windows |
+| Ollama (o un altro servizio, vedi sotto) | genera il riassunto | `brew install ollama` → [ollama.com](https://ollama.com) su Windows |
 | Un modello Ollama | il cervello del riassunto | `ollama pull qwen2.5:7b` |
 | whisper.cpp | trascrive l'audio | `brew install whisper-cpp` (macOS) / vedi sotto (Windows) |
 | Un modello whisper | pesi per la trascrizione | si scarica dall'app, in Impostazioni |
@@ -44,6 +45,13 @@ Su **Windows** whisper.cpp non ha un gestore di pacchetti: scarica una release
 precompilata da [ggml-org/whisper.cpp/releases](https://github.com/ggml-org/whisper.cpp/releases),
 estraila, e in *Impostazioni → Percorso personalizzato* indica il percorso di
 `whisper-cli.exe`.
+
+Su **Linux** servono `whisper-cli` nel `PATH` (su Arch: `whisper.cpp` da AUR, oppure
+`whisper.cpp-cuda` / `whisper.cpp-vulkan`), Ollama e `parec`, che arriva con `libpulse`
+(Arch) o `pulseaudio-utils` (Debian/Ubuntu) e funziona anche su PipeWire tramite
+`pipewire-pulse`. L'audio di sistema si registra dal *monitor* dell'uscita: di default
+quella predefinita, oppure quella scelta in *Uscita da registrare* nella schermata di
+registrazione. Nessun permesso da concedere.
 
 ## Avvio in sviluppo
 
@@ -58,6 +66,7 @@ npm run dev
 ```bash
 npm run dist:mac     # -> dist/NoteBro-1.0.0-arm64.dmg
 npm run dist:win     # -> dist/NoteBro Setup 1.0.0.exe  (da eseguire su Windows)
+npm run dist:linux   # -> dist/NoteBro-1.0.0.AppImage
 ```
 
 `dist:mac` crea al primo utilizzo un certificato di firma locale (vedi
@@ -132,6 +141,45 @@ comunque nel verbale.
 Restano anche salvati in chiaro accanto al riassunto, per rileggere cosa avevi
 annotato.
 
+## Trascrizione in diretta (sperimentale, opzionale)
+
+Spenta di default: la trascrizione avviene a fine call. Da *Impostazioni → Trascrizione in
+diretta* si può attivare la visualizzazione delle battute mentre si parla, con qualche
+secondo di ritardo.
+
+- NoteBro avvia `whisper-server` (parte della stessa build di `whisper-cli`) a inizio
+  registrazione e lo chiude alla fine; il modello resta caricato per tutta la call.
+- Ogni canale viene tagliato sulle pause (al massimo ogni 10 s) e inviato al server un
+  pezzo alla volta; i pezzi silenziosi non vengono inviati.
+- **Può pesare sulle prestazioni durante la riunione**: whisper gira insieme all'app della
+  videochiamata. Senza GPU conviene un modello piccolo, scelto a parte in *Modello per la
+  diretta*. Se il computer non sta al passo, la schermata lo segnala.
+- *Riusa la diretta a fine call* salta la trascrizione finale e va subito al riassunto: più
+  veloce, ma meno precisa. Se la diretta si è interrotta o è vuota, la call viene
+  ritrascritta per intero.
+
+## Servizi per il riassunto
+
+La trascrizione resta sempre in locale. Il riassunto lo scrive un **servizio** a scelta,
+configurato in *Impostazioni → Riassunto — servizi*; se ne possono creare quanti si
+vuole, ciascuno con un nome proprio:
+
+| Tipo | Per cosa | Cosa serve |
+| --- | --- | --- |
+| Ollama | sul computer o su un altro in rete | indirizzo, modello |
+| Compatibile OpenAI | OpenRouter, Hermes, LM Studio, llama.cpp server, vLLM… | indirizzo, modello, chiave se richiesta |
+| API Anthropic | Claude a consumo | chiave API, modello (default `claude-opus-5-5`) |
+| Claude Code | Claude con il proprio abbonamento | il comando `claude` installato e autenticato |
+
+Uno è il **predefinito**; prima di registrare se ne può scegliere un altro solo per quella
+call. Le chiavi API stanno in `secrets.json`, cifrate con il portachiavi di sistema, e non
+arrivano mai all'interfaccia. Quando un servizio invia la trascrizione fuori dal computer,
+l'app lo dice esplicitamente (anche per i modelli `:cloud` di Ollama). Claude Code viene
+lanciato senza strumenti, senza impostazioni di progetto e in una cartella vuota.
+
+Chi aggiorna da una versione precedente ritrova il proprio Ollama come servizio
+"Ollama locale", predefinito, con lo stesso indirizzo e modello.
+
 ## Template per tipo di conversazione
 
 Un colloquio, una formazione e una call commerciale non vogliono le stesse sezioni. Il
@@ -184,7 +232,8 @@ microfono ──► getUserMedia ──► AudioWorklet ─┐
                                               ├─► PCM 16 kHz mono ─► me.wav   ─► whisper ─┐
 audio di sistema                              │                                            ├─► dialogo ─► Ollama ─► riassunto
   macOS:   helper ScreenCaptureKit ───────────┤                                            │
-  Windows: getDisplayMedia (loopback) ────────┘   ...                     ─► them.wav ─► whisper ─┘
+  Windows: getDisplayMedia (loopback) ────────┤
+  Linux:   parec sul monitor dell'uscita ─────┘   ...                     ─► them.wav ─► whisper ─┘
 ```
 
 Dettagli che contano:
@@ -217,19 +266,28 @@ Dettagli che contano:
 ## Dove finiscono i dati
 
 Tutto sotto `~/Library/Application Support/NoteBro` (su Windows
-`%APPDATA%\NoteBro`):
+`%APPDATA%\NoteBro`, su Linux `~/.config/NoteBro`):
 
 ```
 library.json          indice di cartelle e riassunti
 settings.json         preferenze
 models/               modelli whisper scaricati
-notes/<id>/           summary.md, transcript.json, audio.webm (mix riascoltabile)
+notes/<titolo>/       summary.md, transcript.json, audio.webm (mix riascoltabile)
 sessions/<id>/        audio temporaneo, cancellato al salvataggio
 logs/notebro.log      diagnostica di cattura, permessi e trascrizione
 ```
 
 I riassunti sono normali file Markdown: puoi leggerli e modificarli anche fuori
-dall'app. *Mostra nel Finder* apre la cartella della nota.
+dall'app. *Mostra nel Finder* (*Mostra nella cartella* su Windows e Linux) apre la
+cartella della nota.
+
+Da *Impostazioni → Dove salvare le note* si sceglie una cartella diversa per le note
+(per esempio una sincronizzata) e come chiamare la cartella di ogni nota: con il titolo
+così com'è (`Riunione con Marco budget 2027`) o in snake_case
+(`riunione_con_marco_budget_2027`). Le impostazioni valgono per le nuove note; *Sposta
+e rinomina le note esistenti* le applica a quelle già salvate. Rinominando una nota, la
+sua cartella segue il titolo. L'indice (`library.json`), le impostazioni e i modelli
+restano nella cartella dell'app.
 
 ## Test
 

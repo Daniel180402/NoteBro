@@ -1,13 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type {
   DownloadProgress,
-  OllamaStatus,
   Settings,
   SystemAudioCapability,
   WhisperStatus
 } from '@shared/types'
 import { TEMPLATES, templateById } from '@shared/templates'
 import { formatBytes } from '../format'
+import { ProvidersSettings } from './ProvidersSettings'
 
 interface PullProgress {
   model: string
@@ -36,7 +36,6 @@ interface SettingsViewProps {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   whisper: WhisperStatus | null
-  ollama: OllamaStatus | null
   capability: SystemAudioCapability | null
   platform: string
   downloads: Record<string, DownloadProgress>
@@ -52,8 +51,8 @@ interface SettingsViewProps {
   busyModel: string | null
   onDownloadModel: (name: string) => void
   onDeleteModel: (name: string) => void
-  onStartOllama: () => void
-  onPullOllama: (model: string) => void
+  /** A summary service was added, edited or removed. */
+  onProvidersChanged: () => void
   onRefresh: () => void
   onOpenScreenSettings: () => void
   onOpenMicSettings: () => void
@@ -62,13 +61,10 @@ interface SettingsViewProps {
   onBack: () => void
 }
 
-const SUGGESTED_OLLAMA = ['qwen2.5:7b', 'llama3.2:3b', 'gemma2:9b', 'qwen2.5:14b']
-
 export function SettingsView({
   settings,
   onPatch,
   whisper,
-  ollama,
   capability,
   platform,
   downloads,
@@ -84,8 +80,7 @@ export function SettingsView({
   busyModel,
   onDownloadModel,
   onDeleteModel,
-  onStartOllama,
-  onPullOllama,
+  onProvidersChanged,
   onRefresh,
   onOpenScreenSettings,
   onOpenMicSettings,
@@ -93,8 +88,6 @@ export function SettingsView({
   onRestart,
   onBack
 }: SettingsViewProps): React.JSX.Element {
-  const [customModel, setCustomModel] = useState('')
-
   return (
     <>
       <button type="button" className="btn btn--ghost" onClick={onBack} style={{ marginBottom: 14 }}>
@@ -107,8 +100,8 @@ export function SettingsView({
         </button>
       </div>
       <p className="subtitle">
-        NoteBro funziona interamente in locale: whisper.cpp per la trascrizione, Ollama per il
-        riassunto.
+        NoteBro trascrive sempre in locale con whisper.cpp. Il riassunto lo scrive il servizio che
+        scegli: Ollama in locale per tenere tutto sul computer, oppure un servizio in rete.
       </p>
 
       <div className="card">
@@ -131,7 +124,9 @@ export function SettingsView({
               <div className="banner__text">
                 {platform === 'darwin'
                   ? 'Installalo con "brew install whisper-cpp", oppure indica qui sotto il percorso dell\'eseguibile.'
-                  : 'Scarica una release di whisper.cpp e indica qui sotto il percorso di whisper-cli.exe.'}
+                  : platform === 'linux'
+                    ? 'Installalo dal gestore di pacchetti (su Arch: whisper.cpp da AUR), oppure indica qui sotto il percorso di whisper-cli.'
+                    : 'Scarica una release di whisper.cpp e indica qui sotto il percorso di whisper-cli.exe.'}
               </div>
             </div>
           </div>
@@ -215,116 +210,98 @@ export function SettingsView({
 
       <div className="card">
         <div className="card__head">
-          <h2>Riassunto — Ollama</h2>
-          <span className="pill">
-            <span className={`dot ${ollama?.running ? 'dot--ok' : 'dot--bad'}`} />
-            {ollama?.running ? 'Server attivo' : 'Server non raggiungibile'}
-          </span>
+          <h2>
+            Trascrizione in diretta <span className="pill">Sperimentale</span>
+          </h2>
+          {settings.liveTranscription && (
+            <span className="pill">
+              <span className={`dot ${whisper?.serverBinaryPath ? 'dot--ok' : 'dot--bad'}`} />
+              {whisper?.serverBinaryPath ? 'whisper-server trovato' : 'whisper-server mancante'}
+            </span>
+          )}
         </div>
-
-        {!ollama?.running && (
-          <div className="banner banner--warn">
-            <div className="banner__body">
-              <div className="banner__title">Ollama non risponde</div>
-              <div className="banner__text">
-                {ollama?.cliFound
-                  ? 'Ollama è installato ma il server non è in esecuzione.'
-                  : 'Installa Ollama da ollama.com, poi torna qui.'}
-              </div>
+        <p className="faint" style={{ marginTop: 0 }}>
+          Funzione sperimentale: mostra la trascrizione mentre parli, con qualche secondo di
+          ritardo. Di default è spenta e la trascrizione avviene a fine call. Può avere ancora
+          difetti: se qualcosa non va, la registrazione continua comunque e la call viene
+          trascritta per intero alla fine.
+        </p>
+        <div className="banner banner--warn">
+          <div className="banner__body">
+            <div className="banner__title">Può rallentare il computer durante la riunione</div>
+            <div className="banner__text">
+              whisper gira per tutta la durata della call, insieme all'app della videochiamata.
+              Senza una GPU, o con un modello grande, l'audio o il video della call possono
+              scattare e la trascrizione può accumulare ritardo. Per la diretta conviene un
+              modello piccolo (Base o Small).
             </div>
-            {ollama?.cliFound && (
-              <button type="button" className="btn btn--primary" onClick={onStartOllama}>
-                Avvia Ollama
-              </button>
-            )}
           </div>
-        )}
-
-        <label className="field">
-          <span>Indirizzo del server</span>
+        </div>
+        <label
+          className={`toggle${settings.liveTranscription ? ' toggle--on' : ''}`}
+          style={{ marginBottom: 14 }}
+        >
           <input
-            type="text"
-            value={settings.ollamaBaseUrl}
-            onChange={(event) => onPatch({ ollamaBaseUrl: event.target.value })}
+            type="checkbox"
+            checked={settings.liveTranscription}
+            onChange={(event) => onPatch({ liveTranscription: event.target.checked })}
           />
+          <span>
+            <span className="toggle__label">Trascrivi durante la call (sperimentale)</span>
+            <span className="toggle__hint">
+              Usa whisper-server, che NoteBro avvia a inizio registrazione e chiude alla fine.
+            </span>
+          </span>
         </label>
 
-        {ollama && ollama.models.length > 0 && (
-          <>
-            <h2 style={{ marginTop: 18 }}>Modelli disponibili</h2>
-            {ollama.models.map((model) => (
-              <div key={model.name} className="model-row">
-                <div className="model-row__body">
-                  <div className="model-row__name">
-                    {model.name}
-                    {settings.ollamaModel === model.name && (
-                      <span className="pill" style={{ marginLeft: 8 }}>
-                        in uso
-                      </span>
-                    )}
-                  </div>
-                  <div className="faint">{formatBytes(model.sizeBytes)}</div>
-                </div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onPatch({ ollamaModel: model.name })}
-                  disabled={settings.ollamaModel === model.name}
-                >
-                  Usa
-                </button>
-              </div>
-            ))}
-          </>
+        {settings.liveTranscription && !whisper?.serverBinaryPath && (
+          <p className="banner banner--warn" style={{ marginBottom: 14 }}>
+            Non trovo whisper-server: deve stare nella stessa cartella di whisper-cli o nel PATH.
+            Senza, la registrazione funziona lo stesso e la trascrizione avviene a fine call.
+          </p>
         )}
 
-        <h2 style={{ marginTop: 18 }}>Scarica un altro modello</h2>
-        <div className="row" style={{ marginBottom: 10 }}>
-          <input
-            type="text"
-            placeholder="nome:tag, es. qwen2.5:7b"
-            value={customModel}
-            onChange={(event) => setCustomModel(event.target.value)}
-          />
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={() => onPullOllama(customModel.trim())}
-            disabled={!customModel.trim() || !ollama?.running || Boolean(pull && !pull.done)}
-          >
-            Scarica
-          </button>
-        </div>
-        <div className="row row--wrap">
-          {SUGGESTED_OLLAMA.filter(
-            (name) => !ollama?.models.some((model) => model.name === name)
-          ).map((name) => (
-            <button
-              key={name}
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => setCustomModel(name)}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-        {pull && !pull.done && (
+        {settings.liveTranscription && (
           <>
-            <p className="faint" style={{ marginBottom: 4, marginTop: 12 }}>
-              {pull.model}: {pull.status}
-            </p>
-            <div className="progress">
-              <div
-                className="progress__fill"
-                style={{
-                  width: `${pull.total > 0 ? Math.round((pull.completed / pull.total) * 100) : 0}%`
-                }}
+            <label className="field" style={{ marginBottom: 14 }}>
+              <span>Modello per la diretta</span>
+              <select
+                value={settings.liveWhisperModel}
+                onChange={(event) => onPatch({ liveWhisperModel: event.target.value })}
+              >
+                <option value="">Lo stesso della trascrizione finale</option>
+                {whisper?.models
+                  .filter((model) => model.installed)
+                  .map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {model.label}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label
+              className={`toggle${settings.reuseLiveTranscript ? ' toggle--on' : ''}`}
+              style={{ marginBottom: 0 }}
+            >
+              <input
+                type="checkbox"
+                checked={settings.reuseLiveTranscript}
+                onChange={(event) => onPatch({ reuseLiveTranscript: event.target.checked })}
               />
-            </div>
+              <span>
+                <span className="toggle__label">Riusa la diretta a fine call</span>
+                <span className="toggle__hint">
+                  Salta la trascrizione finale e passa subito al riassunto. Più veloce, ma meno
+                  precisa: la diretta lavora a pezzi di pochi secondi. Se la diretta si è
+                  interrotta, la call viene comunque ritrascritta per intero.
+                </span>
+              </span>
+            </label>
           </>
         )}
       </div>
+
+      <ProvidersSettings pull={pull} onChanged={onProvidersChanged} />
 
       {platform === 'darwin' && (
         <div className="card">
@@ -366,6 +343,8 @@ export function SettingsView({
           </p>
         </div>
       )}
+
+      <NotesLocation settings={settings} onPatch={onPatch} />
 
       <div className="card">
         <div className="card__head">
@@ -713,5 +692,129 @@ export function SettingsView({
         </label>
       </div>
     </>
+  )
+}
+
+/** Turns a title into the folder name the chosen convention produces, for the preview. */
+function previewName(title: string, naming: Settings['noteNaming']): string {
+  if (naming === 'snake') {
+    return title
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '_')
+      .replace(/^_+|_+$/g, '')
+  }
+  return title.replace(/[<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function NotesLocation({
+  settings,
+  onPatch
+}: {
+  settings: Settings
+  onPatch: (patch: Partial<Settings>) => void
+}): React.JSX.Element {
+  const [defaultDir, setDefaultDir] = useState('')
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [moving, setMoving] = useState(false)
+
+  useEffect(() => {
+    void window.notebro.notes.defaultDirectory().then(setDefaultDir)
+  }, [])
+
+  const current = settings.notesDirectory || defaultDir
+  const sample = 'Riunione con Marco: budget 2027'
+
+  const choose = async (): Promise<void> => {
+    setMessage(null)
+    const result = await window.notebro.notes.chooseDirectory()
+    if (result.error) setMessage({ ok: false, text: result.error })
+    else if (result.path) onPatch({ notesDirectory: result.path })
+  }
+
+  const reorganize = async (): Promise<void> => {
+    setMoving(true)
+    setMessage(null)
+    try {
+      const result = await window.notebro.notes.reorganize()
+      setMessage(
+        result.failed.length > 0
+          ? {
+              ok: false,
+              text: `Spostate ${result.moved} note; non sono riuscito a spostare: ${result.failed.join(', ')}. Dettagli nel log.`
+            }
+          : {
+              ok: true,
+              text:
+                result.moved > 0
+                  ? `Fatto: ${result.moved} note spostate e rinominate.`
+                  : 'Le note sono già tutte al loro posto.'
+            }
+      )
+    } catch (error) {
+      setMessage({ ok: false, text: (error as Error).message })
+    } finally {
+      setMoving(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Dove salvare le note</h2>
+      <p className="faint" style={{ marginTop: 0 }}>
+        Ogni nota è una cartella con il riassunto (<code>summary.md</code>), la trascrizione (
+        <code>transcript.json</code>) e, se la conservi, la registrazione.
+      </p>
+
+      <label className="field">
+        <span>Cartella</span>
+        <input type="text" value={current} readOnly />
+      </label>
+      <div className="row row--wrap" style={{ marginBottom: 16 }}>
+        <button type="button" className="btn" onClick={() => void choose()}>
+          Scegli cartella…
+        </button>
+        {settings.notesDirectory && (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => onPatch({ notesDirectory: '' })}
+          >
+            Usa quella predefinita
+          </button>
+        )}
+      </div>
+
+      <label className="field">
+        <span>Nome della cartella di ogni nota</span>
+        <select
+          value={settings.noteNaming}
+          onChange={(event) => onPatch({ noteNaming: event.target.value as Settings['noteNaming'] })}
+        >
+          <option value="title">Titolo normale — {previewName(sample, 'title')}</option>
+          <option value="snake">snake_case — {previewName(sample, 'snake')}</option>
+        </select>
+      </label>
+      <p className="faint" style={{ marginTop: 6 }}>
+        Se due note hanno lo stesso titolo, alla seconda viene aggiunto un numero. Quando rinomini
+        una nota, la sua cartella viene rinominata di conseguenza.
+      </p>
+
+      <p className="faint" style={{ marginBottom: 10 }}>
+        Cartella e nome valgono per le nuove note. Per applicarli anche a quelle già salvate:
+      </p>
+      <div className="row row--wrap">
+        <button type="button" className="btn" onClick={() => void reorganize()} disabled={moving}>
+          {moving ? 'Spostamento…' : 'Sposta e rinomina le note esistenti'}
+        </button>
+        {message && (
+          <span className="pill">
+            <span className={`dot ${message.ok ? 'dot--ok' : 'dot--bad'}`} />
+            {message.text}
+          </span>
+        )}
+      </div>
+    </div>
   )
 }

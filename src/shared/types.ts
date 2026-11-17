@@ -27,8 +27,13 @@ export interface Folder {
   createdAt: number
 }
 
+/** How a note's folder on disk is named: as typed, or lowercase_with_underscores. */
+export type NoteNaming = 'title' | 'snake'
+
 export interface NoteMeta {
   id: string
+  /** Absolute folder holding the note's files; absent on notes saved before it was configurable. */
+  dir?: string
   folderId: string | null
   title: string
   /** Language code the call was recorded in. */
@@ -38,7 +43,8 @@ export interface NoteMeta {
   /** First ~200 characters of the summary, for the list view. */
   excerpt: string
   speakers: SpeakerId[]
-  models: { whisper: string; ollama: string }
+  /** `ollama` holds the summary model, whatever service ran it; `provider` its nickname. */
+  models: { whisper: string; ollama: string; provider?: string }
   /** True when a mixed recording was kept and can be played back. */
   hasAudio: boolean
   /** Format the recording is stored in; 'wav' only for notes not yet converted. */
@@ -66,8 +72,18 @@ export type SystemAudioMode =
   | 'macos-screencapturekit'
   /** Chromium loopback via getDisplayMedia. */
   | 'windows-loopback'
+  /** parec on the monitor of a PulseAudio/PipeWire sink. */
+  | 'linux-pulse-monitor'
   /** Fall back to picking a virtual input device (BlackHole, VB-Cable…). */
   | 'input-device'
+
+/** A PulseAudio/PipeWire monitor source, i.e. what an output device is playing. */
+export interface MonitorSource {
+  /** Source name as parec expects it. */
+  name: string
+  /** Human-readable label, e.g. "Monitor of Built-in Audio Analog Stereo". */
+  description: string
+}
 
 export interface SystemAudioCapability {
   mode: SystemAudioMode
@@ -89,6 +105,8 @@ export interface WhisperModelInfo {
 export interface WhisperStatus {
   available: boolean
   binaryPath: string | null
+  /** whisper-server, needed only for live transcription. */
+  serverBinaryPath: string | null
   source: 'settings' | 'bundled' | 'path' | 'none'
   models: WhisperModelInfo[]
 }
@@ -115,8 +133,10 @@ export interface Settings {
   whisperModel: string
   whisperBinaryPath: string
   whisperThreads: number
-  ollamaModel: string
-  ollamaBaseUrl: string
+  /** Services that can write the summary; see ProviderConfig. */
+  providers: ProviderConfig[]
+  /** The one used unless a recording picks another. */
+  defaultProviderId: string
   speakerLabels: { me: string; them: string }
   /** Your name, so the summary knows who the other side is addressing. */
   userName: string
@@ -132,6 +152,62 @@ export interface Settings {
   /** Removes the speaker output from the mic signal; vital without headphones. */
   echoCancellation: boolean
   noiseSuppression: boolean
+  /** Show the transcript while recording, through whisper-server. Costs CPU/GPU during the call. */
+  liveTranscription: boolean
+  /** Model for the live transcript; empty means the same as whisperModel. */
+  liveWhisperModel: string
+  /** Skip the final transcription and keep the live one. */
+  reuseLiveTranscript: boolean
+  /** Where new notes are saved; empty means inside the app's data folder. */
+  notesDirectory: string
+  noteNaming: NoteNaming
+}
+
+/**
+ * How a provider is reached:
+ * - ollama: an Ollama server, local or remote
+ * - openai: any OpenAI-compatible /chat/completions endpoint (OpenRouter, LM Studio, Hermes…)
+ * - anthropic: the Claude API, with an API key
+ * - claude-code: the local `claude` CLI, on the user's own Claude subscription
+ */
+export type ProviderKind = 'ollama' | 'openai' | 'anthropic' | 'claude-code'
+
+export interface ProviderConfig {
+  id: string
+  /** The user's own name for it, e.g. "Ollama del server". */
+  name: string
+  kind: ProviderKind
+  /** Server address for ollama and openai; unused otherwise. */
+  baseUrl: string
+  model: string
+  /** Context window in tokens when the service cannot report it; 0 = ask or guess. */
+  contextLength: number
+  /** Path of the `claude` executable for claude-code; empty = search PATH. */
+  cliPath: string
+}
+
+/** What the interface may know about a provider: never the key itself. */
+export interface ProviderView extends ProviderConfig {
+  hasApiKey: boolean
+  /** True when the transcript leaves this computer. */
+  remote: boolean
+  /** Host the transcript is sent to, for the privacy notice. */
+  destination: string
+}
+
+export interface ProviderCheck {
+  ok: boolean
+  /** Why it is not usable, or a short confirmation. */
+  detail: string
+  /** Models the service offers, when it can list them. */
+  models: string[]
+  /** Ollama on this machine, installed but not running. */
+  canStart: boolean
+}
+
+export interface LiveStatus {
+  state: 'off' | 'starting' | 'ready' | 'lagging' | 'error'
+  message: string
 }
 
 export interface StartRecordingOptions {
@@ -181,7 +257,7 @@ export interface ProcessResult {
   template: string
   durationMs: number
   language: string
-  models: { whisper: string; ollama: string }
+  models: { whisper: string; ollama: string; provider?: string }
 }
 
 export interface LevelUpdate {

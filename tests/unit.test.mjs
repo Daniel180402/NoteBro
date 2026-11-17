@@ -13,7 +13,11 @@ import {
   wavToWebm,
   speakerName,
   voicedWindow,
-  voicesIn
+  voicesIn,
+  pulse,
+  chunker,
+  naming,
+  providerRules
 } from './.build/modules.mjs'
 
 export async function run() {
@@ -371,6 +375,138 @@ export async function run() {
     await wavToWebm(tooShort, join(dir, 'tiny.webm')).catch(() => { refused = true })
     check('refuses a recording too short to encode', refused)
     check('and leaves that original untouched', existsSync(tooShort))
+  }
+
+  section('pulse: Linux system audio through parec')
+  {
+    const args = pulse.parecArgs('')
+    check('defaults to the monitor of the default output', args.includes('--device=@DEFAULT_MONITOR@'))
+    check(
+      'asks for the PCM the recorder writes',
+      ['--format=s16le', '--rate=16000', '--channels=1', '--raw'].every((arg) => args.includes(arg))
+    )
+    check(
+      'records the chosen output when one is set',
+      pulse.parecArgs('alsa_output.usb.monitor').includes('--device=alsa_output.usb.monitor')
+    )
+
+    // Shape of `pactl --format=json list sources` on PipeWire 1.x.
+    const json = JSON.stringify([
+      { name: 'alsa_output.hdmi.monitor', description: 'Monitor of HDMI', monitor_source: 'alsa_output.hdmi' },
+      { name: 'alsa_input.usb-mic.mono-fallback', description: 'USB Mic', monitor_source: '' },
+      { name: 'alsa_output.analog.monitor', description: '' }
+    ])
+    const monitors = pulse.parseMonitorsJson(json)
+    check('keeps only monitor sources', monitors.length === 2, JSON.stringify(monitors))
+    check('uses the description as label', monitors[0]?.description === 'Monitor of HDMI')
+    check('falls back to the name without one', monitors[1]?.description === 'alsa_output.analog.monitor')
+    check('survives output that is not JSON', pulse.parseMonitorsJson('Failure: no JSON').length === 0)
+
+    const short = [
+      '62\talsa_output.hdmi.monitor\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED',
+      '63\talsa_input.usb-mic.mono-fallback\tPipeWire\ts16le 1ch 48000Hz\tSUSPENDED',
+      ''
+    ].join('\n')
+    const fromShort = pulse.parseMonitorsShort(short)
+    check(
+      'reads the short listing of older pactl',
+      fromShort.length === 1 && fromShort[0].name === 'alsa_output.hdmi.monitor'
+    )
+  }
+
+  section('chunker: cutting a live channel on pauses')
+  {
+    // ms of tone or silence, as the PCM the recorder receives.
+    const pcm = (ms, loud) => {
+      const samples = (ms * 16000) / 1000
+      const out = Buffer.alloc(samples * 2)
+      if (loud) for (let i = 0; i < samples; i += 1) out.writeInt16LE(Math.round(Math.sin(i / 3) * 12000), i * 2)
+      return out
+    }
+
+    const waiting = new chunker.ChannelChunker(0)
+    waiting.push(pcm(3000, true))
+    check('waits while there is too little audio', waiting.take() === null)
+
+    const paused = new chunker.ChannelChunker(1000)
+    paused.push(pcm(5000, true))
+    paused.push(pcm(600, false))
+    paused.push(pcm(2000, true))
+    const first = paused.take()
+    check('cuts inside the pause', first !== null && first.pcm.length / 32 >= 5000 && first.pcm.length / 32 <= 5600, String(first && first.pcm.length / 32))
+    check('places the piece on the channel timeline', first?.startMs === 1000)
+    check('keeps the rest for later', paused.take() === null && paused.bufferedMs > 2000)
+    const rest = paused.take(true)
+    check('flush hands over the remainder', rest !== null && rest.startMs === 1000 + first.pcm.length / 32)
+    check('and leaves nothing behind', paused.bufferedMs === 0)
+
+    const monologue = new chunker.ChannelChunker(0)
+    monologue.push(pcm(11000, true))
+    const forced = monologue.take()
+    check('cuts a monologue at the hard limit', forced !== null && forced.pcm.length / 32 === 10000)
+
+    const silent = new chunker.ChannelChunker(0)
+    silent.push(pcm(5000, false))
+    const quiet = silent.take(true)
+    check('reports the peak so silence can be skipped', quiet !== null && quiet.peak === 0)
+    check('computes the 100 ms energy profile', quiet?.energyProfile.length === 50)
+
+    const odd = new chunker.ChannelChunker(0)
+    odd.push(Buffer.alloc(16001))
+    const even = odd.take(true)
+    check('never splits a sample in two', even !== null && even.pcm.length % 2 === 0)
+
+    const wav = chunker.wavFile(pcm(1000, true))
+    check('wraps pieces in a 16 kHz mono WAV', wav.toString('ascii', 0, 4) === 'RIFF' && wav.readUInt32LE(24) === 16000 && wav.readUInt16LE(22) === 1)
+
+    const json = chunker.serverToWhisperJson(
+      {
+        segments: [
+          { start: 0.5, end: 2.25, text: ' Ciao a tutti', no_speech_prob: 0.02 },
+          { start: 2.5, end: 4, text: ' Grazie per la visione.', no_speech_prob: 0.9 }
+        ]
+      },
+      4000
+    )
+    check('converts seconds to milliseconds', json.transcription[0]?.offsets.from === 500 && json.transcription[0]?.offsets.to === 2250)
+    check('drops what whisper itself calls non-speech', json.transcription.length === 1)
+    const plain = chunker.serverToWhisperJson({ text: 'solo testo' }, 3000)
+    check('accepts the plain json format too', plain.transcription[0]?.offsets.to === 3000)
+  }
+
+  section('naming: folder names for saved notes')
+  {
+    const title = 'Riunione con Marco: budget 2027'
+    check('keeps a readable title', naming.noteFolderName(title, 'title') === 'Riunione con Marco budget 2027')
+    check('turns it into snake_case', naming.noteFolderName(title, 'snake') === 'riunione_con_marco_budget_2027')
+    check('drops accents in snake_case', naming.noteFolderName('Perché è così?', 'snake') === 'perche_e_cosi')
+    check('keeps accents in a normal title', naming.noteFolderName('Perché è così?', 'title') === 'Perché è così')
+    check('removes path separators', !naming.noteFolderName('a/b\\c', 'title').match(/[\/\\]/))
+    check('never yields an empty name', naming.noteFolderName('???', 'title') === 'Senza titolo' && naming.noteFolderName('***', 'snake') === 'senza_titolo')
+    check('avoids names Windows reserves', naming.noteFolderName('CON', 'title') === 'Senza titolo')
+    const long = naming.noteFolderName('parola '.repeat(30), 'title')
+    check('clips long titles on a word', long.length <= 80 && !long.endsWith(' ') && long.endsWith('parola'))
+    const taken = new Set(['Riunione', 'Riunione (2)', 'riunione'])
+    check('numbers duplicates', naming.uniqueName('Riunione', 'title', (name) => taken.has(name)) === 'Riunione (3)')
+    check('numbers duplicates in snake_case', naming.uniqueName('riunione', 'snake', (name) => taken.has(name)) === 'riunione_2')
+  }
+
+  section('providerRules: does the transcript leave the computer?')
+  {
+    const local = { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5:7b' }
+    check('local Ollama stays local', !providerRules.isRemote(local))
+    check('localhost too', !providerRules.isRemote({ ...local, baseUrl: 'http://localhost:11434' }))
+    check('Ollama on another machine is remote', providerRules.isRemote({ ...local, baseUrl: 'http://192.168.1.20:11434' }))
+    check(
+      'a :cloud model is remote even through local Ollama',
+      providerRules.isRemote({ ...local, model: 'kimi-k2.5:cloud' }) &&
+        providerRules.destinationOf({ ...local, model: 'kimi-k2.5:cloud' }) === 'ollama.com'
+    )
+    const router = { kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'x' }
+    check('OpenRouter is remote, named by host', providerRules.isRemote(router) && providerRules.destinationOf(router) === 'openrouter.ai')
+    check('LM Studio on loopback is local', !providerRules.isRemote({ kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', model: 'x' }))
+    check('the Claude API is remote', providerRules.isRemote({ kind: 'anthropic', baseUrl: '', model: '' }))
+    check('Claude Code is remote', providerRules.isRemote({ kind: 'claude-code', baseUrl: '', model: '' }))
   }
 
   await rm(dir, { recursive: true, force: true })

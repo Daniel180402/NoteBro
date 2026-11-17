@@ -1,6 +1,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, writeFile } from 'node:fs/promises'
 import { BrowserWindow, app, dialog, ipcMain, session, shell } from 'electron'
 import { handleAudioRequests, registerAudioScheme } from './audio-protocol'
 import * as diarization from './diarization'
@@ -8,13 +9,16 @@ import { clearDraft, loadDraft, saveDraft } from './draft'
 import type {
   DownloadProgress,
   ProcessProgress,
+  ProviderConfig,
   Settings,
   SpeakerId,
   StartRecordingOptions
 } from '@shared/types'
 import { logLine, logPath } from './log'
+import * as llm from './llm'
 import * as ollama from './ollama'
-import { noteDir, root, sessionDir } from './paths'
+import * as secrets from './secrets'
+import { defaultNotesRoot, root, sessionDir } from './paths'
 import * as pipeline from './pipeline'
 import * as recorder from './recorder'
 import * as storage from './storage'
@@ -98,9 +102,10 @@ function configureSession(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('system:info', () => ({
+  ipcMain.handle('system:info', async () => ({
     platform: process.platform,
-    capability: sysaudio.capability()
+    capability: sysaudio.capability(),
+    monitors: await sysaudio.listMonitors()
   }))
   ipcMain.handle('system:openScreenRecordingSettings', () => {
     sysaudio.openScreenRecordingSettings()
@@ -142,26 +147,57 @@ function registerIpc(): void {
   })
   ipcMain.handle('diarization:delete', () => diarization.deleteModels())
 
-  ipcMain.handle('ollama:status', async () => {
-    const settings = await store.getSettings()
-    return ollama.status(settings.ollamaBaseUrl)
+  // Ollama housekeeping takes the server to act on: there can be several.
+  ipcMain.handle('ollama:status', (_event, baseUrl: string) => ollama.status(baseUrl))
+  ipcMain.handle('ollama:start', (_event, baseUrl: string) => ollama.startServer(baseUrl))
+  ipcMain.handle('ollama:pull', async (_event, baseUrl: string, model: string) => {
+    await ollama.pullModel(baseUrl, model, (progress) => send('ollama:pull', progress))
+    return ollama.status(baseUrl)
   })
-  ipcMain.handle('ollama:start', async () => {
+
+  ipcMain.handle('providers:list', async () => {
     const settings = await store.getSettings()
-    return ollama.startServer(settings.ollamaBaseUrl)
+    return {
+      providers: settings.providers.map(llm.viewOf),
+      defaultProviderId: settings.defaultProviderId,
+      encryptionAvailable: secrets.encryptionAvailable()
+    }
   })
-  ipcMain.handle('ollama:pull', async (_event, model: string) => {
+  ipcMain.handle('providers:save', async (_event, provider: ProviderConfig, apiKey?: string) => {
     const settings = await store.getSettings()
-    await ollama.pullModel(settings.ollamaBaseUrl, model, (progress) =>
-      send('ollama:pull', progress)
-    )
-    return ollama.status(settings.ollamaBaseUrl)
+    const others = settings.providers.filter((candidate) => candidate.id !== provider.id)
+    const exists = others.length !== settings.providers.length
+    const providers = exists
+      ? settings.providers.map((candidate) => (candidate.id === provider.id ? provider : candidate))
+      : [...settings.providers, provider]
+    // Only a value actually typed replaces the stored key; undefined keeps it.
+    if (apiKey !== undefined) await secrets.setSecret(provider.id, apiKey)
+    return store.setSettings({ providers })
+  })
+  ipcMain.handle('providers:delete', async (_event, id: string) => {
+    const settings = await store.getSettings()
+    const providers = settings.providers.filter((candidate) => candidate.id !== id)
+    if (providers.length === 0) throw new Error('Serve almeno un servizio di riassunto.')
+    await secrets.setSecret(id, '')
+    return store.setSettings({
+      providers,
+      defaultProviderId:
+        settings.defaultProviderId === id ? providers[0].id : settings.defaultProviderId
+    })
+  })
+  ipcMain.handle('providers:check', async (_event, id: string) => {
+    const settings = await store.getSettings()
+    const provider = settings.providers.find((candidate) => candidate.id === id)
+    if (!provider) return { ok: false, detail: 'Servizio non trovato.', models: [], canStart: false }
+    return llm.checkProvider(provider)
   })
 
   ipcMain.handle('recorder:start', (_event, options: StartRecordingOptions) =>
     recorder.start(options, {
       onLevel: (stream, level) => send('recorder:level', { stream, level }),
-      onWarning: (message) => send('recorder:warning', message)
+      onWarning: (message) => send('recorder:warning', message),
+      onLiveSegments: (segments) => send('live:segments', segments),
+      onLiveStatus: (status) => send('live:status', status)
     })
   )
   ipcMain.on('recorder:pcm', (_event, speaker: SpeakerId, data: Uint8Array) => {
@@ -180,7 +216,7 @@ function registerIpc(): void {
         sessionId: string
         language: string
         whisperModel: string
-        ollamaModel: string
+        providerId?: string
         userNotes?: string
         template?: string
       }
@@ -207,7 +243,7 @@ function registerIpc(): void {
 
   ipcMain.handle('storage:report', async () => {
     const library = await store.getLibrary()
-    return storage.report(library.notes.map((note) => note.id))
+    return storage.report(library.notes.map((note) => store.noteDirFor(note.id)))
   })
   ipcMain.handle('storage:cleanSessions', async () => {
     const draft = await loadDraft()
@@ -274,7 +310,7 @@ function registerIpc(): void {
         durationMs: number
         summary: string
         segments: Parameters<typeof store.saveNote>[0]['segments']
-        models: { whisper: string; ollama: string }
+        models: { whisper: string; ollama: string; provider?: string }
         voiceNames?: Record<string, string>
         userNotes?: string
         template?: string
@@ -327,8 +363,27 @@ function registerIpc(): void {
   )
   ipcMain.handle('notes:delete', (_event, id: string) => store.deleteNote(id))
   ipcMain.handle('notes:reveal', (_event, id: string) => {
-    shell.showItemInFolder(join(noteDir(id), 'summary.md'))
+    shell.showItemInFolder(join(store.noteDirFor(id), 'summary.md'))
   })
+  ipcMain.handle('notes:defaultDirectory', () => defaultNotesRoot())
+  ipcMain.handle('notes:chooseDirectory', async () => {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Cartella delle note',
+      properties: ['openDirectory', 'createDirectory']
+    }
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+    const chosen = result.canceled ? undefined : result.filePaths[0]
+    if (!chosen) return { path: null }
+    try {
+      await access(chosen, constants.W_OK)
+    } catch {
+      return { path: null, error: 'NoteBro non può scrivere in quella cartella.' }
+    }
+    return { path: chosen }
+  })
+  ipcMain.handle('notes:reorganize', () => store.reorganizeNotes())
   ipcMain.handle(
     'notes:export',
     async (_event, input: { title: string; summary: string; transcript?: string }) => {

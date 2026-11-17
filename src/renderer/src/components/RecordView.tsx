@@ -1,6 +1,10 @@
+import { useEffect, useRef } from 'react'
 import type {
   LanguageOption,
-  OllamaStatus,
+  LiveStatus,
+  MonitorSource,
+  Segment,
+  ProviderView,
   Settings,
   SystemAudioCapability,
   WhisperStatus
@@ -20,9 +24,14 @@ interface RecordViewProps {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   whisper: WhisperStatus | null
-  ollama: OllamaStatus | null
+  providers: ProviderView[]
+  /** The service for this recording only; changing it does not touch the default. */
+  summaryProviderId: string
+  onSummaryProvider: (id: string) => void
   capability: SystemAudioCapability | null
   microphones: MediaDeviceInfo[]
+  /** Linux only: the outputs whose playback can be recorded. */
+  monitors: MonitorSource[]
   blockers: Blocker[]
   onStart: () => void
   onTestSystemAudio: () => void
@@ -41,9 +50,12 @@ export function RecordView({
   settings,
   onPatch,
   whisper,
-  ollama,
+  providers,
+  summaryProviderId,
+  onSummaryProvider,
   capability,
   microphones,
+  monitors,
   blockers,
   onStart,
   onTestSystemAudio,
@@ -59,6 +71,7 @@ export function RecordView({
   const installedModels = whisper?.models.filter((model) => model.installed) ?? []
   const noSource = !settings.captureMic && !settings.captureSystem
   const canStart = blockers.length === 0 && !noSource && !starting
+  const linux = capability?.mode === 'linux-pulse-monitor'
 
   return (
     <>
@@ -77,17 +90,30 @@ export function RecordView({
               voce del tuo interlocutore andrebbe persa. {preflight.error}
               <br />
               <br />
-              Attiva <strong>NoteBro</strong> in Impostazioni di Sistema → Privacy e sicurezza →
-              Registrazione schermo e audio di sistema, poi <strong>riavvia NoteBro</strong>: quel
-              permesso vale solo dal lancio successivo.
+              {linux ? (
+                <>
+                  Controlla che PipeWire o PulseAudio sia in esecuzione e che l'uscita scelta qui
+                  sotto sia quella su cui senti la call.
+                </>
+              ) : (
+                <>
+                  Attiva <strong>NoteBro</strong> in Impostazioni di Sistema → Privacy e sicurezza
+                  → Registrazione schermo e audio di sistema, poi <strong>riavvia NoteBro</strong>:
+                  quel permesso vale solo dal lancio successivo.
+                </>
+              )}
             </div>
             <div className="row row--wrap" style={{ marginTop: 12 }}>
-              <button type="button" className="btn btn--primary" onClick={onOpenScreenSettings}>
-                Apri impostazioni
-              </button>
-              <button type="button" className="btn" onClick={onRestart}>
-                Riavvia NoteBro
-              </button>
+              {!linux && (
+                <>
+                  <button type="button" className="btn btn--primary" onClick={onOpenScreenSettings}>
+                    Apri impostazioni
+                  </button>
+                  <button type="button" className="btn" onClick={onRestart}>
+                    Riavvia NoteBro
+                  </button>
+                </>
+              )}
               <button type="button" className="btn" onClick={onRecordMicOnly}>
                 Registra solo il microfono
               </button>
@@ -222,6 +248,29 @@ export function RecordView({
           </label>
         )}
 
+        {settings.captureSystem && capability?.mode === 'linux-pulse-monitor' && capability.available && (
+          <label className="field" style={{ marginTop: 16, marginBottom: 0 }}>
+            <span>Uscita da registrare</span>
+            <select
+              value={settings.systemInputDeviceId}
+              onChange={(event) => onPatch({ systemInputDeviceId: event.target.value })}
+            >
+              <option value="">Uscita audio predefinita</option>
+              {monitors.map((monitor) => (
+                <option key={monitor.name} value={monitor.name}>
+                  {monitor.description}
+                </option>
+              ))}
+              {settings.systemInputDeviceId &&
+                !monitors.some((monitor) => monitor.name === settings.systemInputDeviceId) && (
+                  <option value={settings.systemInputDeviceId}>
+                    {settings.systemInputDeviceId} (non collegata)
+                  </option>
+                )}
+            </select>
+          </label>
+        )}
+
         {settings.captureSystem && settings.diarization && (
           <label className="field" style={{ marginTop: 16, marginBottom: 0 }}>
             <span>Quante persone collegate, oltre a te</span>
@@ -244,7 +293,8 @@ export function RecordView({
             <p className="faint" style={{ marginTop: 0, marginBottom: 10 }}>
               {capability.detail}
             </p>
-            {capability.mode === 'macos-screencapturekit' && (
+            {(capability.mode === 'macos-screencapturekit' ||
+              (capability.mode === 'linux-pulse-monitor' && capability.available)) && (
               <div className="row row--wrap">
                 <button type="button" className="btn" onClick={onTestSystemAudio} disabled={testing}>
                   {testing ? 'Test in corso…' : 'Testa audio di sistema'}
@@ -287,22 +337,26 @@ export function RecordView({
             </select>
           </label>
           <label className="field" style={{ marginBottom: 0 }}>
-            <span>Riassunto (Ollama)</span>
-            <select
-              value={settings.ollamaModel}
-              onChange={(event) => onPatch({ ollamaModel: event.target.value })}
-              disabled={!ollama?.running || ollama.models.length === 0}
-            >
-              {(!ollama?.running || ollama.models.length === 0) && (
-                <option value="">Nessun modello disponibile</option>
-              )}
-              {ollama?.models.map((model) => (
-                <option key={model.name} value={model.name}>
-                  {model.name}
+            <span>Riassunto con</span>
+            <select value={summaryProviderId} onChange={(event) => onSummaryProvider(event.target.value)}>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                  {provider.model ? ` · ${provider.model}` : ''}
+                  {provider.remote ? ' (in rete)' : ''}
                 </option>
               ))}
             </select>
           </label>
+          {(() => {
+            const chosen = providers.find((provider) => provider.id === summaryProviderId)
+            return chosen?.remote ? (
+              <p className="faint" style={{ gridColumn: '1 / -1', margin: 0 }}>
+                Con "{chosen.name}" la trascrizione e i tuoi appunti vengono inviati a{' '}
+                <strong>{chosen.destination}</strong> per scrivere il riassunto.
+              </p>
+            ) : null
+          })()}
         </div>
       </div>
 
@@ -332,6 +386,9 @@ interface RecordingViewProps {
   /** Free notes typed while the conversation happens. */
   notes: string
   onNotesChange: (notes: string) => void
+  liveEnabled: boolean
+  liveSegments: Segment[]
+  liveStatus: LiveStatus | null
   onPause: () => void
   onResume: () => void
   onStop: () => void
@@ -352,6 +409,9 @@ export function RecordingView({
   warnings,
   notes,
   onNotesChange,
+  liveEnabled,
+  liveSegments,
+  liveStatus,
   onPause,
   onResume,
   onStop,
@@ -423,6 +483,8 @@ export function RecordingView({
         />
       </div>
 
+      {liveEnabled && <LiveTranscript segments={liveSegments} status={liveStatus} labels={labels} />}
+
       <div className="card">
         <h2>Livelli in ingresso</h2>
         {captureMic && (
@@ -473,4 +535,84 @@ export function RecordingView({
 function hintFor(seen: boolean, receiving: boolean): string | undefined {
   if (seen) return undefined
   return receiving ? 'collegato, in attesa di voce…' : 'nessun dato in arrivo'
+}
+
+function LiveTranscript({
+  segments,
+  status,
+  labels
+}: {
+  segments: Segment[]
+  status: LiveStatus | null
+  labels: Settings['speakerLabels']
+}): React.JSX.Element {
+  const box = useRef<HTMLDivElement>(null)
+  const pinned = useRef(true)
+
+  // Follow the newest line, unless the user scrolled up to reread something.
+  useEffect(() => {
+    const element = box.current
+    if (element && pinned.current) element.scrollTop = element.scrollHeight
+  }, [segments])
+
+  // Consecutive lines of the same speaker read as one turn.
+  const turns: Array<{ speaker: Segment['speaker']; from: number; text: string }> = []
+  for (const segment of segments) {
+    const last = turns[turns.length - 1]
+    if (last && last.speaker === segment.speaker) last.text = `${last.text} ${segment.text}`
+    else turns.push({ speaker: segment.speaker, from: segment.from, text: segment.text })
+  }
+
+  const dot =
+    status?.state === 'ready'
+      ? 'dot--ok'
+      : status?.state === 'error'
+        ? 'dot--bad'
+        : 'dot--warn'
+
+  return (
+    <div className="card">
+      <div className="card__head">
+        <h2>
+          Trascrizione in diretta <span className="pill">Sperimentale</span>
+        </h2>
+        <span className="pill">
+          <span className={`dot ${dot}`} />
+          {status?.state === 'ready'
+            ? 'Attiva'
+            : status?.state === 'lagging'
+              ? 'In ritardo'
+              : status?.state === 'error'
+                ? 'Interrotta'
+                : 'Avvio…'}
+        </span>
+      </div>
+      {status && status.state !== 'ready' && (
+        <p className="faint" style={{ marginTop: 0 }}>
+          {status.message}
+        </p>
+      )}
+      <div
+        ref={box}
+        onScroll={(event) => {
+          const element = event.currentTarget
+          pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40
+        }}
+        style={{ maxHeight: 260, overflowY: 'auto', fontSize: '14px', lineHeight: 1.5 }}
+      >
+        {turns.length === 0 ? (
+          <p className="faint" style={{ margin: 0 }}>
+            Le battute compaiono qui con qualche secondo di ritardo.
+          </p>
+        ) : (
+          turns.map((turn) => (
+            <p key={`${turn.speaker}-${turn.from}`} style={{ margin: '0 0 8px' }}>
+              <span className="faint">{formatDuration(turn.from)}</span>{' '}
+              <strong>{labels[turn.speaker]}:</strong> {turn.text}
+            </p>
+          ))
+        )}
+      </div>
+    </div>
+  )
 }

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { modelsDir, noteDir, root } from './paths'
+import { modelsDir, root } from './paths'
 
 export interface StorageReport {
   /** Bytes held by saved recordings. */
@@ -35,17 +35,17 @@ function directorySize(path: string): number {
   return total
 }
 
-export function report(noteIds: string[]): StorageReport {
+export function report(noteDirs: string[]): StorageReport {
   let audioBytes = 0
   let pendingCompression = 0
   let reclaimableBytes = 0
 
-  for (const id of noteIds) {
+  for (const dir of noteDirs) {
     for (const [name, compressed] of [
       ['audio.webm', true],
       ['audio.wav', false]
     ] as const) {
-      const path = join(noteDir(id), name)
+      const path = join(dir, name)
       if (!existsSync(path)) continue
       const size = statSync(path).size
       audioBytes += size

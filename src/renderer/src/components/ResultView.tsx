@@ -125,7 +125,7 @@ export function ResultView({
           <span>Durata {formatDuration(result.durationMs)}</span>
           <span>Lingua {result.language}</span>
           <span>Whisper {result.models.whisper}</span>
-          <span>Ollama {result.models.ollama}</span>
+          <span>{result.models.provider ?? 'Ollama'} · {result.models.ollama}</span>
         </div>
       </div>
 

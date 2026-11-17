@@ -12,6 +12,11 @@ import type {
   SpeakerId,
   StartRecordingOptions,
   SystemAudioCapability,
+  MonitorSource,
+  ProviderCheck,
+  ProviderConfig,
+  ProviderView,
+  LiveStatus,
   WhisperStatus,
   OllamaStatus
 } from '@shared/types'
@@ -33,7 +38,11 @@ interface PullProgress {
 
 const api = {
   system: {
-    info: (): Promise<{ platform: string; capability: SystemAudioCapability }> =>
+    info: (): Promise<{
+      platform: string
+      capability: SystemAudioCapability
+      monitors: MonitorSource[]
+    }> =>
       ipcRenderer.invoke('system:info'),
     openScreenRecordingSettings: (): Promise<void> =>
       ipcRenderer.invoke('system:openScreenRecordingSettings'),
@@ -63,11 +72,25 @@ const api = {
   },
 
   ollama: {
-    status: (): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:status'),
-    start: (): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:start'),
-    pull: (model: string): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:pull', model),
+    status: (baseUrl: string): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:status', baseUrl),
+    start: (baseUrl: string): Promise<OllamaStatus> => ipcRenderer.invoke('ollama:start', baseUrl),
+    pull: (baseUrl: string, model: string): Promise<OllamaStatus> =>
+      ipcRenderer.invoke('ollama:pull', baseUrl, model),
     onPull: (callback: (progress: PullProgress) => void): (() => void) =>
       subscribe('ollama:pull', callback)
+  },
+
+  providers: {
+    list: (): Promise<{
+      providers: ProviderView[]
+      defaultProviderId: string
+      encryptionAvailable: boolean
+    }> => ipcRenderer.invoke('providers:list'),
+    /** `apiKey`: undefined keeps the stored key, '' removes it. */
+    save: (provider: ProviderConfig, apiKey?: string): Promise<Settings> =>
+      ipcRenderer.invoke('providers:save', provider, apiKey),
+    remove: (id: string): Promise<Settings> => ipcRenderer.invoke('providers:delete', id),
+    check: (id: string): Promise<ProviderCheck> => ipcRenderer.invoke('providers:check', id)
   },
 
   diarization: {
@@ -117,12 +140,19 @@ const api = {
       subscribe('recorder:warning', callback)
   },
 
+  live: {
+    onSegments: (callback: (segments: Segment[]) => void): (() => void) =>
+      subscribe('live:segments', callback),
+    onStatus: (callback: (status: LiveStatus) => void): (() => void) =>
+      subscribe('live:status', callback)
+  },
+
   process: {
     run: (options: {
       sessionId: string
       language: string
       whisperModel: string
-      ollamaModel: string
+      providerId?: string
       userNotes?: string
       template?: string
     }): Promise<ProcessResult> => ipcRenderer.invoke('process:run', options),
@@ -178,7 +208,7 @@ const api = {
       durationMs: number
       summary: string
       segments: Segment[]
-      models: { whisper: string; ollama: string }
+      models: { whisper: string; ollama: string; provider?: string }
       voiceNames?: Record<string, string>
       userNotes?: string
       template?: string
@@ -195,6 +225,11 @@ const api = {
     ): Promise<Library> => ipcRenderer.invoke('notes:update', id, patch),
     remove: (id: string): Promise<Library> => ipcRenderer.invoke('notes:delete', id),
     reveal: (id: string): Promise<void> => ipcRenderer.invoke('notes:reveal', id),
+    defaultDirectory: (): Promise<string> => ipcRenderer.invoke('notes:defaultDirectory'),
+    chooseDirectory: (): Promise<{ path: string | null; error?: string }> =>
+      ipcRenderer.invoke('notes:chooseDirectory'),
+    reorganize: (): Promise<{ library: Library; moved: number; failed: string[] }> =>
+      ipcRenderer.invoke('notes:reorganize'),
     export: (input: {
       title: string
       summary: string

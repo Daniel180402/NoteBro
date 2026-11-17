@@ -151,17 +151,40 @@ async function* ndjson(body: ReadableStream<Uint8Array>): AsyncGenerator<unknown
   }
 }
 
-interface ChatOptions {
-  baseUrl: string
-  model: string
+/** One system + user exchange, streamed. Every provider implements this. */
+export interface ChatRequest {
   system: string
   user: string
+  /** Context window to ask for; only Ollama needs to be told. */
   numCtx: number
   onToken?: (token: string) => void
   signal?: AbortSignal
 }
 
-async function chat(options: ChatOptions): Promise<string> {
+/** A service that can write the summary, already configured. */
+export interface Llm {
+  chat(request: ChatRequest): Promise<string>
+  /** The model's context window, in tokens. */
+  contextTokens: number
+  /** Upper bound used for one pass, below the window to keep memory and cost sane. */
+  maxPassTokens: number
+}
+
+interface ChatOptions extends ChatRequest {
+  baseUrl: string
+  model: string
+}
+
+export function ollamaLlm(baseUrl: string, model: string, contextTokens: number): Llm {
+  return {
+    contextTokens,
+    // Local memory, not the model, is the limit: a larger window rarely fits.
+    maxPassTokens: 16_384,
+    chat: (request) => ollamaChat({ ...request, baseUrl, model })
+  }
+}
+
+export async function ollamaChat(options: ChatOptions): Promise<string> {
   const response = await fetch(`${options.baseUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -278,8 +301,10 @@ function systemPrompt(
 
 
 export interface SummarizeOptions {
-  baseUrl: string
-  model: string
+  /** The service to use; without it, the Ollama at baseUrl with model. */
+  llm?: Llm
+  baseUrl?: string
+  model?: string
   language: string
   segments: Segment[]
   labels: Settings['speakerLabels']
@@ -299,7 +324,17 @@ export interface SummarizeOptions {
   signal?: AbortSignal
 }
 
+function llmOf(options: { llm?: Llm; baseUrl?: string; model?: string; contextLength?: number }): Llm {
+  return (
+    options.llm ??
+    ollamaLlm(options.baseUrl ?? 'http://127.0.0.1:11434', options.model ?? '', options.contextLength ?? DEFAULT_CONTEXT)
+  )
+}
+
 export async function summarize(options: SummarizeOptions): Promise<string> {
+  const llm = llmOf(options)
+  const chat = (request: Omit<ChatRequest, 'numCtx'>): Promise<string> =>
+    llm.chat({ ...request, numCtx })
   const languageName = LANGUAGE_NAMES[options.language] ?? LANGUAGE_NAMES.auto
   const system = systemPrompt(
     languageName,
@@ -314,7 +349,10 @@ export async function summarize(options: SummarizeOptions): Promise<string> {
   const notesBlock = notes
     ? `\n\nAppunti presi da chi registrava, mentre la conversazione avveniva:\n\n${notes}\n`
     : ''
-  const numCtx = Math.max(4096, Math.min(options.contextLength ?? DEFAULT_CONTEXT, 16_384))
+  const numCtx = Math.max(
+    4096,
+    Math.min(options.contextLength ?? llm.contextTokens ?? DEFAULT_CONTEXT, llm.maxPassTokens)
+  )
   const budgetChars = Math.floor((numCtx - RESERVED_TOKENS) * CHARS_PER_TOKEN)
 
   const transcript = renderTranscript(options.segments, options.labels, options.voiceNames)
@@ -325,10 +363,7 @@ export async function summarize(options: SummarizeOptions): Promise<string> {
   if (transcript.length <= budgetChars) {
     options.onStage('Riassunto in corso…', null)
     return chat({
-      baseUrl: options.baseUrl,
-      model: options.model,
       system,
-      numCtx,
       signal: options.signal,
       onToken: options.onToken,
       user: `Trascrizione della conversazione:\n\n${transcript}${notesBlock}\n\nRedigi il verbale con esattamente questa struttura:\n\n${outline}`
@@ -345,10 +380,7 @@ export async function summarize(options: SummarizeOptions): Promise<string> {
       index / (chunks.length + 1)
     )
     const note = await chat({
-      baseUrl: options.baseUrl,
-      model: options.model,
       system,
-      numCtx,
       signal: options.signal,
       user: `Questa è la parte ${index + 1} di ${chunks.length} di una conversazione più lunga.\n\n${chunk}\n\nElenca in modo compatto: temi trattati, decisioni, azioni con responsabile, domande aperte, dati e nomi citati. Solo punti elenco, nessuna introduzione.`
     })
@@ -357,10 +389,7 @@ export async function summarize(options: SummarizeOptions): Promise<string> {
 
   options.onStage('Sintesi finale…', chunks.length / (chunks.length + 1))
   return chat({
-    baseUrl: options.baseUrl,
-    model: options.model,
     system,
-    numCtx,
     signal: options.signal,
     onToken: options.onToken,
     user: `Sintesi di parti successive della stessa conversazione:\n\n${partials.join('\n\n')}${notesBlock}\n\nUnificale in un unico verbale, eliminando le ripetizioni e mantenendo l'ordine cronologico. Usa esattamente questa struttura:\n\n${outline}`
@@ -389,8 +418,9 @@ function chunkTranscript(
 }
 
 export interface TitleOptions {
-  baseUrl: string
-  model: string
+  llm?: Llm
+  baseUrl?: string
+  model?: string
   language: string
   summary: string
   signal?: AbortSignal
@@ -398,9 +428,7 @@ export interface TitleOptions {
 
 export async function suggestTitle(options: TitleOptions): Promise<string> {
   const languageName = LANGUAGE_NAMES[options.language] ?? LANGUAGE_NAMES.auto
-  const raw = await chat({
-    baseUrl: options.baseUrl,
-    model: options.model,
+  const raw = await llmOf(options).chat({
     numCtx: 4096,
     signal: options.signal,
     system: `Rispondi con un titolo solo, in ${languageName}, massimo 8 parole, senza virgolette, senza punto finale.`,

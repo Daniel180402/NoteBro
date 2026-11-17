@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Library, OllamaStatus, WhisperStatus } from '@shared/types'
+import type { Library, WhisperStatus } from '@shared/types'
 
 export const ALL_NOTES = 'all'
 export const UNFILED = 'unfiled'
@@ -14,7 +14,8 @@ interface SidebarProps {
   onRenameFolder: (id: string, name: string) => void
   onDeleteFolder: (id: string, name: string) => void
   whisper: WhisperStatus | null
-  ollama: OllamaStatus | null
+  /** The summary service for the next recording, and whether it answers. */
+  summary: { name: string; ok: boolean | null; remote: boolean } | null
   busy: boolean
   /** A finished summary that has not been filed yet. */
   pendingResult: boolean
@@ -31,7 +32,7 @@ export function Sidebar({
   onRenameFolder,
   onDeleteFolder,
   whisper,
-  ollama,
+  summary,
   busy,
   pendingResult,
   onResumeResult
@@ -199,9 +200,14 @@ export function Sidebar({
             <span className={`dot ${modelReady ? 'dot--ok' : 'dot--bad'}`} />
             Trascrizione
           </span>
-          <span className="pill" title={ollama?.baseUrl}>
-            <span className={`dot ${ollama?.running ? 'dot--ok' : 'dot--bad'}`} />
-            Ollama
+          <span
+            className="pill"
+            title={summary?.remote ? 'Il riassunto viene scritto da un servizio in rete' : 'Riassunto in locale'}
+          >
+            <span
+              className={`dot ${summary?.ok ? 'dot--ok' : summary?.ok === false ? 'dot--bad' : 'dot--warn'}`}
+            />
+            {summary?.name ?? 'Riassunto'}
           </span>
         </div>
         <button type="button" className="btn btn--ghost btn--block" onClick={onOpenSettings}>

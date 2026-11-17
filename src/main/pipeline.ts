@@ -1,6 +1,9 @@
 import { join } from 'node:path'
 import type { ProcessProgress, ProcessResult, Segment, SpeakerId } from '@shared/types'
 import { diarize } from './diarization'
+import { createLlm, DEFAULT_ANTHROPIC_MODEL } from './llm'
+import { destinationOf, isRemote } from './provider-rules'
+import { logLine } from './log'
 import { mixToMono } from './mixdown'
 import { sessionDir } from './paths'
 import { getCompleted } from './recorder'
@@ -19,7 +22,8 @@ export interface RunOptions {
   sessionId: string
   language: string
   whisperModel: string
-  ollamaModel: string
+  /** Which configured provider writes the summary; the default one when absent. */
+  providerId?: string
   /** What the user typed while the conversation was happening. */
   userNotes?: string
   /** Outline to follow; falls back to the saved preference. */
@@ -39,6 +43,24 @@ export async function run(options: RunOptions): Promise<ProcessResult> {
 
   report({ stage: 'preparing', message: 'Preparazione dei canali audio…' })
 
+  // Resolved before transcribing, so a missing key or model fails in seconds,
+  // not after minutes of whisper.
+  const provider =
+    settings.providers.find((candidate) => candidate.id === options.providerId) ??
+    settings.providers.find((candidate) => candidate.id === settings.defaultProviderId) ??
+    settings.providers[0]
+  if (!provider) throw new Error('Nessun servizio di riassunto configurato: aggiungine uno nelle impostazioni.')
+  if (!provider.model && provider.kind !== 'claude-code' && provider.kind !== 'anthropic') {
+    throw new Error(`"${provider.name}" non ha un modello: sceglilo nelle impostazioni.`)
+  }
+  const llm = await createLlm(provider)
+  const summaryModel = provider.model || (provider.kind === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : 'predefinito')
+  logLine(
+    'pipeline',
+    `riassunto con "${provider.name}" (${provider.kind}, ${summaryModel})${isRemote(provider) ? ` — invio a ${destinationOf(provider)}` : ''}`
+  )
+  const summarizing = `Riassunto con ${provider.name}…`
+
   // Identifying the voices only needs the remote channel, so it runs alongside
   // transcription instead of after it: on a 14-minute meeting that hid more
   // than four minutes of waiting.
@@ -56,9 +78,19 @@ export async function run(options: RunOptions): Promise<ProcessResult> {
         }).catch(() => [])
       : null
 
-  const segments: Segment[] = []
+  let live: Segment[] | null = null
+  if (session.liveTranscript) {
+    report({ stage: 'preparing', message: 'Completamento della trascrizione in diretta…' })
+    live = await session.liveTranscript
+    // An empty or broken live transcript is no reason to lose the call: redo it.
+    if (live && live.length === 0) live = null
+    logLine('pipeline', live ? `trascrizione in diretta riusata: ${live.length} segmenti` : 'trascrizione in diretta non utilizzabile, rifaccio la trascrizione')
+  }
+
+  const segments: Segment[] = live ? [...live] : []
   // Transcribe the two channels independently so every line keeps its speaker.
-  for (const channel of session.channels) {
+  // Skipped when the live transcript came through whole.
+  for (const channel of live ? [] : session.channels) {
     if (options.signal?.aborted) throw new Error('Elaborazione annullata.')
     const who = settings.speakerLabels[channel.speaker]
     report({
@@ -120,12 +152,10 @@ export async function run(options: RunOptions): Promise<ProcessResult> {
   }
 
   let partialSummary = ''
-  report({ stage: 'summarizing', message: 'Riassunto con Ollama…', partialSummary })
+  report({ stage: 'summarizing', message: summarizing, partialSummary })
 
-  const contextLength = await ollama.contextLengthOf(settings.ollamaBaseUrl, options.ollamaModel)
   const summary = await ollama.summarize({
-    baseUrl: settings.ollamaBaseUrl,
-    model: options.ollamaModel,
+    llm,
     language: options.language,
     segments: merged,
     labels: settings.speakerLabels,
@@ -133,20 +163,18 @@ export async function run(options: RunOptions): Promise<ProcessResult> {
     vocabulary: settings.vocabulary,
     userNotes: options.userNotes,
     templateId: options.template ?? settings.template,
-    contextLength,
     signal: options.signal,
     onStage: (message, fraction) =>
       report({ stage: 'summarizing', message, progress: fraction, partialSummary }),
     onToken: (token) => {
       partialSummary += token
-      report({ stage: 'summarizing', message: 'Riassunto con Ollama…', partialSummary })
+      report({ stage: 'summarizing', message: summarizing, partialSummary })
     }
   })
 
   const title = await ollama
     .suggestTitle({
-      baseUrl: settings.ollamaBaseUrl,
-      model: options.ollamaModel,
+      llm,
       language: options.language,
       summary,
       signal: options.signal
@@ -165,7 +193,7 @@ export async function run(options: RunOptions): Promise<ProcessResult> {
     template: options.template ?? settings.template,
     durationMs: session.durationMs,
     language: options.language,
-    models: { whisper: options.whisperModel, ollama: options.ollamaModel }
+    models: { whisper: options.whisperModel, ollama: summaryModel, provider: provider.name }
   }
 }
 

@@ -17,8 +17,11 @@ export const modelsDir = (): string => ensure(join(root(), 'models'))
 export const sessionDir = (sessionId: string): string =>
   ensure(join(root(), 'sessions', sessionId))
 
-/** Everything belonging to a saved note. */
-export const noteDir = (noteId: string): string => ensure(join(root(), 'notes', noteId))
+/** Default home of saved notes, when no custom folder is set. */
+export const defaultNotesRoot = (): string => join(root(), 'notes')
+
+/** Where notes saved before folders were configurable live: notes/<id>. */
+export const legacyNoteDir = (noteId: string): string => join(defaultNotesRoot(), noteId)
 
 export const libraryFile = (): string => join(root(), 'library.json')
 export const settingsFile = (): string => join(root(), 'settings.json')

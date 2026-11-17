@@ -12,6 +12,7 @@ import type {
   SpeakerId,
   StartRecordingOptions,
   SystemAudioCapability,
+  MonitorSource,
   WhisperStatus,
   OllamaStatus
 } from '@shared/types'
@@ -33,7 +34,11 @@ interface PullProgress {
 
 const api = {
   system: {
-    info: (): Promise<{ platform: string; capability: SystemAudioCapability }> =>
+    info: (): Promise<{
+      platform: string
+      capability: SystemAudioCapability
+      monitors: MonitorSource[]
+    }> =>
       ipcRenderer.invoke('system:info'),
     openScreenRecordingSettings: (): Promise<void> =>
       ipcRenderer.invoke('system:openScreenRecordingSettings'),

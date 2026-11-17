@@ -16,6 +16,7 @@
     "build": "electron-vite build",
     "dist:mac": "npm run cert:mac && npm run native:mac && npm run build && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
     "test": "node tests/run.mjs",
     "test:integration": "node tests/run.mjs --integration",
     "cert:mac": "node scripts/make-signing-cert.mjs"

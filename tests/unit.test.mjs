@@ -13,7 +13,8 @@ import {
   wavToWebm,
   speakerName,
   voicedWindow,
-  voicesIn
+  voicesIn,
+  pulse
 } from './.build/modules.mjs'
 
 export async function run() {
@@ -371,6 +372,43 @@ export async function run() {
     await wavToWebm(tooShort, join(dir, 'tiny.webm')).catch(() => { refused = true })
     check('refuses a recording too short to encode', refused)
     check('and leaves that original untouched', existsSync(tooShort))
+  }
+
+  section('pulse: Linux system audio through parec')
+  {
+    const args = pulse.parecArgs('')
+    check('defaults to the monitor of the default output', args.includes('--device=@DEFAULT_MONITOR@'))
+    check(
+      'asks for the PCM the recorder writes',
+      ['--format=s16le', '--rate=16000', '--channels=1', '--raw'].every((arg) => args.includes(arg))
+    )
+    check(
+      'records the chosen output when one is set',
+      pulse.parecArgs('alsa_output.usb.monitor').includes('--device=alsa_output.usb.monitor')
+    )
+
+    // Shape of `pactl --format=json list sources` on PipeWire 1.x.
+    const json = JSON.stringify([
+      { name: 'alsa_output.hdmi.monitor', description: 'Monitor of HDMI', monitor_source: 'alsa_output.hdmi' },
+      { name: 'alsa_input.usb-mic.mono-fallback', description: 'USB Mic', monitor_source: '' },
+      { name: 'alsa_output.analog.monitor', description: '' }
+    ])
+    const monitors = pulse.parseMonitorsJson(json)
+    check('keeps only monitor sources', monitors.length === 2, JSON.stringify(monitors))
+    check('uses the description as label', monitors[0]?.description === 'Monitor of HDMI')
+    check('falls back to the name without one', monitors[1]?.description === 'alsa_output.analog.monitor')
+    check('survives output that is not JSON', pulse.parseMonitorsJson('Failure: no JSON').length === 0)
+
+    const short = [
+      '62\talsa_output.hdmi.monitor\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED',
+      '63\talsa_input.usb-mic.mono-fallback\tPipeWire\ts16le 1ch 48000Hz\tSUSPENDED',
+      ''
+    ].join('\n')
+    const fromShort = pulse.parseMonitorsShort(short)
+    check(
+      'reads the short listing of older pactl',
+      fromShort.length === 1 && fromShort[0].name === 'alsa_output.hdmi.monitor'
+    )
   }
 
   await rm(dir, { recursive: true, force: true })

@@ -1,6 +1,6 @@
 # NoteBro
 
-App desktop per macOS e Windows che ascolta **il tuo microfono e l'audio di sistema**
+App desktop per macOS, Windows e Linux che ascolta **il tuo microfono e l'audio di sistema**
 durante una call o un colloquio, e al termine produce un **riassunto strutturato**
 che puoi nominare e archiviare in cartelle.
 
@@ -8,7 +8,8 @@ Tutto gira in locale: nessun audio e nessun testo lascia il computer.
 
 - **Trascrizione** — [whisper.cpp](https://github.com/ggml-org/whisper.cpp), accelerato su GPU
 - **Riassunto** — [Ollama](https://ollama.com) con il modello che preferisci
-- **Audio di sistema** — ScreenCaptureKit su macOS, loopback di Chromium su Windows.
+- **Audio di sistema** — ScreenCaptureKit su macOS, loopback di Chromium su Windows,
+  monitor di PulseAudio/PipeWire (`parec`) su Linux.
   Nessun driver virtuale tipo BlackHole.
 - **Riconoscimento degli interlocutori** — [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx),
   per distinguere più persone collegate (sperimentale, spento di default)
@@ -45,6 +46,13 @@ precompilata da [ggml-org/whisper.cpp/releases](https://github.com/ggml-org/whis
 estraila, e in *Impostazioni → Percorso personalizzato* indica il percorso di
 `whisper-cli.exe`.
 
+Su **Linux** servono `whisper-cli` nel `PATH` (su Arch: `whisper.cpp` da AUR, oppure
+`whisper.cpp-cuda` / `whisper.cpp-vulkan`), Ollama e `parec`, che arriva con `libpulse`
+(Arch) o `pulseaudio-utils` (Debian/Ubuntu) e funziona anche su PipeWire tramite
+`pipewire-pulse`. L'audio di sistema si registra dal *monitor* dell'uscita: di default
+quella predefinita, oppure quella scelta in *Uscita da registrare* nella schermata di
+registrazione. Nessun permesso da concedere.
+
 ## Avvio in sviluppo
 
 ```bash
@@ -58,6 +66,7 @@ npm run dev
 ```bash
 npm run dist:mac     # -> dist/NoteBro-1.0.0-arm64.dmg
 npm run dist:win     # -> dist/NoteBro Setup 1.0.0.exe  (da eseguire su Windows)
+npm run dist:linux   # -> dist/NoteBro-1.0.0.AppImage
 ```
 
 `dist:mac` crea al primo utilizzo un certificato di firma locale (vedi
@@ -184,7 +193,8 @@ microfono ──► getUserMedia ──► AudioWorklet ─┐
                                               ├─► PCM 16 kHz mono ─► me.wav   ─► whisper ─┐
 audio di sistema                              │                                            ├─► dialogo ─► Ollama ─► riassunto
   macOS:   helper ScreenCaptureKit ───────────┤                                            │
-  Windows: getDisplayMedia (loopback) ────────┘   ...                     ─► them.wav ─► whisper ─┘
+  Windows: getDisplayMedia (loopback) ────────┤
+  Linux:   parec sul monitor dell'uscita ─────┘   ...                     ─► them.wav ─► whisper ─┘
 ```
 
 Dettagli che contano:
@@ -217,7 +227,7 @@ Dettagli che contano:
 ## Dove finiscono i dati
 
 Tutto sotto `~/Library/Application Support/NoteBro` (su Windows
-`%APPDATA%\NoteBro`):
+`%APPDATA%\NoteBro`, su Linux `~/.config/NoteBro`):
 
 ```
 library.json          indice di cartelle e riassunti

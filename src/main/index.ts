@@ -98,9 +98,10 @@ function configureSession(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('system:info', () => ({
+  ipcMain.handle('system:info', async () => ({
     platform: process.platform,
-    capability: sysaudio.capability()
+    capability: sysaudio.capability(),
+    monitors: await sysaudio.listMonitors()
   }))
   ipcMain.handle('system:openScreenRecordingSettings', () => {
     sysaudio.openScreenRecordingSettings()

@@ -1,5 +1,6 @@
 import type {
   LanguageOption,
+  MonitorSource,
   OllamaStatus,
   Settings,
   SystemAudioCapability,
@@ -23,6 +24,8 @@ interface RecordViewProps {
   ollama: OllamaStatus | null
   capability: SystemAudioCapability | null
   microphones: MediaDeviceInfo[]
+  /** Linux only: the outputs whose playback can be recorded. */
+  monitors: MonitorSource[]
   blockers: Blocker[]
   onStart: () => void
   onTestSystemAudio: () => void
@@ -44,6 +47,7 @@ export function RecordView({
   ollama,
   capability,
   microphones,
+  monitors,
   blockers,
   onStart,
   onTestSystemAudio,
@@ -59,6 +63,7 @@ export function RecordView({
   const installedModels = whisper?.models.filter((model) => model.installed) ?? []
   const noSource = !settings.captureMic && !settings.captureSystem
   const canStart = blockers.length === 0 && !noSource && !starting
+  const linux = capability?.mode === 'linux-pulse-monitor'
 
   return (
     <>
@@ -77,17 +82,30 @@ export function RecordView({
               voce del tuo interlocutore andrebbe persa. {preflight.error}
               <br />
               <br />
-              Attiva <strong>NoteBro</strong> in Impostazioni di Sistema → Privacy e sicurezza →
-              Registrazione schermo e audio di sistema, poi <strong>riavvia NoteBro</strong>: quel
-              permesso vale solo dal lancio successivo.
+              {linux ? (
+                <>
+                  Controlla che PipeWire o PulseAudio sia in esecuzione e che l'uscita scelta qui
+                  sotto sia quella su cui senti la call.
+                </>
+              ) : (
+                <>
+                  Attiva <strong>NoteBro</strong> in Impostazioni di Sistema → Privacy e sicurezza
+                  → Registrazione schermo e audio di sistema, poi <strong>riavvia NoteBro</strong>:
+                  quel permesso vale solo dal lancio successivo.
+                </>
+              )}
             </div>
             <div className="row row--wrap" style={{ marginTop: 12 }}>
-              <button type="button" className="btn btn--primary" onClick={onOpenScreenSettings}>
-                Apri impostazioni
-              </button>
-              <button type="button" className="btn" onClick={onRestart}>
-                Riavvia NoteBro
-              </button>
+              {!linux && (
+                <>
+                  <button type="button" className="btn btn--primary" onClick={onOpenScreenSettings}>
+                    Apri impostazioni
+                  </button>
+                  <button type="button" className="btn" onClick={onRestart}>
+                    Riavvia NoteBro
+                  </button>
+                </>
+              )}
               <button type="button" className="btn" onClick={onRecordMicOnly}>
                 Registra solo il microfono
               </button>
@@ -222,6 +240,29 @@ export function RecordView({
           </label>
         )}
 
+        {settings.captureSystem && capability?.mode === 'linux-pulse-monitor' && capability.available && (
+          <label className="field" style={{ marginTop: 16, marginBottom: 0 }}>
+            <span>Uscita da registrare</span>
+            <select
+              value={settings.systemInputDeviceId}
+              onChange={(event) => onPatch({ systemInputDeviceId: event.target.value })}
+            >
+              <option value="">Uscita audio predefinita</option>
+              {monitors.map((monitor) => (
+                <option key={monitor.name} value={monitor.name}>
+                  {monitor.description}
+                </option>
+              ))}
+              {settings.systemInputDeviceId &&
+                !monitors.some((monitor) => monitor.name === settings.systemInputDeviceId) && (
+                  <option value={settings.systemInputDeviceId}>
+                    {settings.systemInputDeviceId} (non collegata)
+                  </option>
+                )}
+            </select>
+          </label>
+        )}
+
         {settings.captureSystem && settings.diarization && (
           <label className="field" style={{ marginTop: 16, marginBottom: 0 }}>
             <span>Quante persone collegate, oltre a te</span>
@@ -244,7 +285,8 @@ export function RecordView({
             <p className="faint" style={{ marginTop: 0, marginBottom: 10 }}>
               {capability.detail}
             </p>
-            {capability.mode === 'macos-screencapturekit' && (
+            {(capability.mode === 'macos-screencapturekit' ||
+              (capability.mode === 'linux-pulse-monitor' && capability.available)) && (
               <div className="row row--wrap">
                 <button type="button" className="btn" onClick={onTestSystemAudio} disabled={testing}>
                   {testing ? 'Test in corso…' : 'Testa audio di sistema'}

@@ -66,8 +66,18 @@ export type SystemAudioMode =
   | 'macos-screencapturekit'
   /** Chromium loopback via getDisplayMedia. */
   | 'windows-loopback'
+  /** parec on the monitor of a PulseAudio/PipeWire sink. */
+  | 'linux-pulse-monitor'
   /** Fall back to picking a virtual input device (BlackHole, VB-Cable…). */
   | 'input-device'
+
+/** A PulseAudio/PipeWire monitor source, i.e. what an output device is playing. */
+export interface MonitorSource {
+  /** Source name as parec expects it. */
+  name: string
+  /** Human-readable label, e.g. "Monitor of Built-in Audio Analog Stereo". */
+  description: string
+}
 
 export interface SystemAudioCapability {
   mode: SystemAudioMode

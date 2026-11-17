@@ -4,7 +4,13 @@ import { join } from 'node:path'
 import type { RecordingResult, SpeakerId, StartRecordingOptions } from '@shared/types'
 import { logLine } from './log'
 import { sessionDir } from './paths'
-import { ensureScreenPermission, startMacSystemAudio, type SystemAudioStream } from './sysaudio'
+import { getSettings } from './store'
+import {
+  capturesSystemAudioInMain,
+  ensureScreenPermission,
+  startSystemAudio,
+  type SystemAudioStream
+} from './sysaudio'
 import { WavWriter } from './wav'
 
 export interface CompletedChannel {
@@ -90,7 +96,7 @@ export async function start(
     session.writers.set('me', writer)
   }
 
-  const nativeSystemAudio = options.captureSystem && process.platform === 'darwin'
+  const nativeSystemAudio = options.captureSystem && capturesSystemAudioInMain()
 
   if (options.captureSystem) {
     const writer = new WavWriter(wavPath(id, 'them'))
@@ -106,7 +112,8 @@ export async function start(
 
   if (nativeSystemAudio) {
     await ensureScreenPermission()
-    session.systemStream = startMacSystemAudio({
+    const { systemInputDeviceId } = await getSettings()
+    session.systemStream = startSystemAudio({
       onReady: () => undefined,
       onError: (message) => {
         session.warnings.push(message)
@@ -117,7 +124,7 @@ export async function start(
         const level = peakOf(chunk)
         throttleLevel('them', level, hooks)
       }
-    })
+    }, systemInputDeviceId)
   }
 
   return { sessionId: id, systemAudioHandledInMain: nativeSystemAudio }

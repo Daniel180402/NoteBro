@@ -9,6 +9,7 @@ import type {
   Settings,
   SpeakerId,
   SystemAudioCapability,
+  MonitorSource,
   WhisperStatus
 } from '@shared/types'
 import { startCapture, listMicrophones, type CaptureHandle } from './audio/capture'
@@ -43,6 +44,7 @@ export function App(): React.JSX.Element {
   const [whisper, setWhisper] = useState<WhisperStatus | null>(null)
   const [ollama, setOllama] = useState<OllamaStatus | null>(null)
   const [platform, setPlatform] = useState('')
+  const [monitors, setMonitors] = useState<MonitorSource[]>([])
   const [capability, setCapability] = useState<SystemAudioCapability | null>(null)
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([])
 
@@ -114,8 +116,14 @@ export function App(): React.JSX.Element {
     setOllama(ollamaStatus)
     setPlatform(info.platform)
     setCapability(info.capability)
+    setMonitors(info.monitors)
     setDiarization(diarizationStatus)
   }, [])
+
+  // A different output has to prove itself again before the next recording.
+  useEffect(() => {
+    systemAudioVerified.current = false
+  }, [settings?.systemInputDeviceId])
 
   // Initial load.
   useEffect(() => {
@@ -208,7 +216,9 @@ export function App(): React.JSX.Element {
         text:
           platform === 'darwin'
             ? 'Installa whisper.cpp con "brew install whisper-cpp", poi ricontrolla dalle impostazioni.'
-            : 'Indica il percorso di whisper-cli.exe nelle impostazioni.',
+            : platform === 'linux'
+              ? 'Installa whisper.cpp dal gestore di pacchetti (deve fornire whisper-cli) oppure indicane il percorso nelle impostazioni.'
+              : 'Indica il percorso di whisper-cli.exe nelle impostazioni.',
         action: { label: 'Impostazioni', run: () => setScreen('settings') }
       })
     } else if (whisper && installed.length === 0) {
@@ -273,7 +283,10 @@ export function App(): React.JSX.Element {
     try {
       // Prove the system-audio path delivers samples before committing to a
       // recording: otherwise a dead channel only surfaces once it is too late.
-      if (settings.captureSystem && platform === 'darwin' && !systemAudioVerified.current) {
+      const probesSystemAudio =
+        platform === 'darwin' ||
+        (capability?.mode === 'linux-pulse-monitor' && capability.available)
+      if (settings.captureSystem && probesSystemAudio && !systemAudioVerified.current) {
         const probe = await window.notebro.system.testSystemAudio()
         if (!probe.ok || probe.bytes === 0) {
           setPreflight({
@@ -533,6 +546,7 @@ export function App(): React.JSX.Element {
               ollama={ollama}
               capability={capability}
               microphones={microphones}
+              monitors={monitors}
               blockers={blockers}
               starting={starting}
               testing={testing}

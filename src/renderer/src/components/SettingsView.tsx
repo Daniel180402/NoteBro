@@ -131,7 +131,9 @@ export function SettingsView({
               <div className="banner__text">
                 {platform === 'darwin'
                   ? 'Installalo con "brew install whisper-cpp", oppure indica qui sotto il percorso dell\'eseguibile.'
-                  : 'Scarica una release di whisper.cpp e indica qui sotto il percorso di whisper-cli.exe.'}
+                  : platform === 'linux'
+                    ? 'Installalo dal gestore di pacchetti (su Arch: whisper.cpp da AUR), oppure indica qui sotto il percorso di whisper-cli.'
+                    : 'Scarica una release di whisper.cpp e indica qui sotto il percorso di whisper-cli.exe.'}
               </div>
             </div>
           </div>

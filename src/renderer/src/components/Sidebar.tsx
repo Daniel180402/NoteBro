@@ -16,10 +16,24 @@ interface SidebarProps {
   whisper: WhisperStatus | null
   /** The summary service for the next recording, and whether it answers. */
   summary: { name: string; ok: boolean | null; remote: boolean } | null
-  busy: boolean
-  /** A finished summary that has not been filed yet. */
-  pendingResult: boolean
+  /** The recording under way, which goes on while other screens are open. */
+  recording: { elapsedMs: number; paused: boolean; current: boolean } | null
+  onResumeRecording: () => void
+  /** Stopped recordings still being transcribed and summarised, when not on screen. */
+  processing: { count: number; failed: boolean } | null
+  onResumeProcessing: () => void
+  /** Finished summaries that have not been filed yet. */
+  pendingResults: number
   onResumeResult: () => void
+}
+
+function clock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(total / 60)
+  const seconds = String(total % 60).padStart(2, '0')
+  return minutes >= 60
+    ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${seconds}`
+    : `${minutes}:${seconds}`
 }
 
 export function Sidebar({
@@ -33,8 +47,11 @@ export function Sidebar({
   onDeleteFolder,
   whisper,
   summary,
-  busy,
-  pendingResult,
+  recording,
+  onResumeRecording,
+  processing,
+  onResumeProcessing,
+  pendingResults,
   onResumeResult
 }: SidebarProps): React.JSX.Element {
   const [newFolder, setNewFolder] = useState<string | null>(null)
@@ -60,16 +77,37 @@ export function Sidebar({
       </div>
 
       <div style={{ padding: '0 12px 6px' }}>
-        <button
-          type="button"
-          className="btn btn--primary btn--block"
-          onClick={onNewRecording}
-          disabled={busy}
-        >
-          Nuova registrazione
-        </button>
+        {recording ? (
+          <button
+            type="button"
+            className={`btn btn--block live-recording${recording.current ? ' live-recording--current' : ''}`}
+            onClick={onResumeRecording}
+            title="La registrazione continua anche mentre guardi altro"
+          >
+            <span className={`live-recording__dot${recording.paused ? ' live-recording__dot--paused' : ''}`} />
+            {recording.paused ? 'In pausa' : 'Registrazione'} · {clock(recording.elapsedMs)}
+          </button>
+        ) : (
+          <button type="button" className="btn btn--primary btn--block" onClick={onNewRecording}>
+            Nuova registrazione
+          </button>
+        )}
 
-        {pendingResult && (
+        {processing && (
+          <button
+            type="button"
+            className="btn btn--block pending"
+            onClick={onResumeProcessing}
+            style={{ marginTop: 8 }}
+          >
+            <span className="pending__dot" />
+            {processing.failed
+              ? 'Elaborazione non riuscita'
+              : `Elaborazione in corso${processing.count > 1 ? ` (${processing.count})` : '…'}`}
+          </button>
+        )}
+
+        {pendingResults > 0 && (
           <button
             type="button"
             className="btn btn--block pending"
@@ -77,7 +115,7 @@ export function Sidebar({
             style={{ marginTop: 8 }}
           >
             <span className="pending__dot" />
-            Riassunto da salvare
+            {pendingResults > 1 ? `${pendingResults} riassunti da salvare` : 'Riassunto da salvare'}
           </button>
         )}
       </div>

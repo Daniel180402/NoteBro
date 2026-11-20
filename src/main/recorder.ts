@@ -283,6 +283,11 @@ export async function cancel(): Promise<void> {
   discard(session.id)
 }
 
+/** Sessions whose audio is still needed: the one recording and those awaiting processing. */
+export function sessionsInUse(): string[] {
+  return [...(active ? [active.id] : []), ...completedSessions.keys()]
+}
+
 export function getCompleted(sessionId: string): CompletedSession | undefined {
   return completedSessions.get(sessionId)
 }

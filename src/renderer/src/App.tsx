@@ -30,6 +30,17 @@ import { timecode } from './format'
 
 type Screen = 'record' | 'recording' | 'processing' | 'result' | 'library' | 'note' | 'settings'
 
+/** A stopped recording waiting for, or going through, transcription and summary. */
+interface ProcessingJob {
+  sessionId: string
+  language: string
+  userNotes: string
+  providerId: string
+  channels: SpeakerId[]
+  /** Set when the run failed; the job then waits for a retry instead of blocking the rest. */
+  error?: string
+}
+
 interface PullProgress {
   model: string
   status: string
@@ -61,7 +72,8 @@ export function App(): React.JSX.Element {
   const [openNote, setOpenNote] = useState<Note | null>(null)
   const [fatal, setFatal] = useState<string | null>(null)
 
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  /** True from the moment capture starts until it is stopped or cancelled, whatever screen is shown. */
+  const [recording, setRecording] = useState(false)
   const [channels, setChannels] = useState<SpeakerId[]>([])
   const [elapsed, setElapsed] = useState(0)
   const [paused, setPaused] = useState(false)
@@ -78,8 +90,12 @@ export function App(): React.JSX.Element {
   const [stopping, setStopping] = useState(false)
 
   const [progress, setProgress] = useState<ProcessProgress | null>(null)
-  const [processError, setProcessError] = useState<string | null>(null)
-  const [result, setResult] = useState<ProcessResult | null>(null)
+  /** Stopped recordings in the order they were stopped; processed one at a time. */
+  const [queue, setQueue] = useState<ProcessingJob[]>([])
+  const [runningId, setRunningId] = useState<string | null>(null)
+  /** Finished summaries not filed yet, oldest first; the first one is shown. */
+  const [results, setResults] = useState<ProcessResult[]>([])
+  const result = results[0] ?? null
   const [saving, setSaving] = useState(false)
 
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({})
@@ -111,6 +127,10 @@ export function App(): React.JSX.Element {
   const startedAt = useRef(0)
   const pausedTotal = useRef(0)
   const pausedAt = useRef<number | null>(null)
+  /** The summary service picked for the recording under way. */
+  const recordingProvider = useRef('')
+  /** Guards against starting the same run twice before state catches up. */
+  const inFlight = useRef<string | null>(null)
 
   const refreshEngines = useCallback(async (): Promise<void> => {
     const [whisperStatus, providerList, info, diarizationStatus] = await Promise.all([
@@ -150,8 +170,7 @@ export function App(): React.JSX.Element {
       setSettings(loadedSettings)
       setLibrary(loadedLibrary)
       // A summary left unfiled last time is restored rather than lost.
-      const draft = await window.notebro.draft.get()
-      if (draft) setResult(draft)
+      setResults(await window.notebro.draft.list())
       await refreshEngines()
       setMicrophones(await listMicrophones().catch(() => []))
     })()
@@ -193,14 +212,14 @@ export function App(): React.JSX.Element {
 
   // Recording clock, plus a decay so the meters fall back when audio stops.
   useEffect(() => {
-    if (screen !== 'recording') return undefined
+    if (!recording) return undefined
     const timer = setInterval(() => {
       const held = pausedAt.current !== null ? Date.now() - pausedAt.current : 0
       setElapsed(Date.now() - startedAt.current - pausedTotal.current - held)
       setLevels((previous) => ({ me: previous.me * 0.6, them: previous.them * 0.6 }))
     }, 120)
     return () => clearInterval(timer)
-  }, [screen])
+  }, [recording])
 
   const patch = useCallback(async (changes: Partial<Settings>): Promise<void> => {
     setSettings((previous) => (previous ? { ...previous, ...changes } : previous))
@@ -360,7 +379,8 @@ export function App(): React.JSX.Element {
       })
 
       capture.current = handle
-      setSessionId(outcome.sessionId)
+      recordingProvider.current = summaryProviderId
+      setRecording(true)
       setChannels([
         ...(settings.captureMic ? (['me'] as SpeakerId[]) : []),
         ...(settings.captureSystem ? (['them'] as SpeakerId[]) : [])
@@ -381,31 +401,44 @@ export function App(): React.JSX.Element {
     }
   }
 
-  const runProcessing = useCallback(
-    async (id: string, language: string, userNotes: string): Promise<void> => {
-      if (!settings) return
-      setProcessError(null)
-      setProgress(null)
-      setScreen('processing')
-      try {
-        const outcome = await window.notebro.process.run({
-          sessionId: id,
-          language,
-          whisperModel: settings.whisperModel,
-          providerId: summaryProviderId,
-          userNotes,
-          template: settings.template
-        })
-        setResult(outcome)
-        // The choice was for this recording only: the next one starts from the default.
-        void window.notebro.providers.list().then((list) => setSummaryProviderId(list.defaultProviderId))
-        setScreen('result')
-      } catch (error) {
-        setProcessError(error instanceof Error ? error.message : String(error))
-      }
-    },
-    [settings]
-  )
+  // Runs the queue one recording at a time; a new recording can start meanwhile.
+  useEffect(() => {
+    if (!settings || runningId || inFlight.current) return
+    const job = queue.find((candidate) => !candidate.error)
+    if (!job) return
+    inFlight.current = job.sessionId
+    setRunningId(job.sessionId)
+    setProgress(null)
+    window.notebro.process
+      .run({
+        sessionId: job.sessionId,
+        language: job.language,
+        whisperModel: settings.whisperModel,
+        providerId: job.providerId,
+        userNotes: job.userNotes,
+        template: settings.template
+      })
+      .then((outcome) => {
+        setResults((previous) => [
+          ...previous.filter((item) => item.sessionId !== outcome.sessionId),
+          outcome
+        ])
+        setQueue((previous) => previous.filter((item) => item.sessionId !== job.sessionId))
+        // Only someone watching the progress is taken to the result.
+        setScreen((current) => (current === 'processing' ? 'result' : current))
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        // A cancelled job has already left the queue, so this changes nothing for it.
+        setQueue((previous) =>
+          previous.map((item) => (item.sessionId === job.sessionId ? { ...item, error: message } : item))
+        )
+      })
+      .finally(() => {
+        inFlight.current = null
+        setRunningId(null)
+      })
+  }, [settings, queue, runningId])
 
   const handleStop = async (): Promise<void> => {
     if (!settings) return
@@ -413,13 +446,25 @@ export function App(): React.JSX.Element {
     try {
       await capture.current?.stop()
       capture.current = null
-      const recording = await window.notebro.recorder.stop()
-      setSessionId(recording.sessionId)
-      await runProcessing(recording.sessionId, settings.language, liveNotes)
+      const stopped = await window.notebro.recorder.stop()
+      setQueue((previous) => [
+        ...previous,
+        {
+          sessionId: stopped.sessionId,
+          language: settings.language,
+          userNotes: liveNotes,
+          providerId: recordingProvider.current,
+          channels
+        }
+      ])
+      setScreen('processing')
+      // The choice was for that recording only: the next one starts from the default.
+      void window.notebro.providers.list().then((list) => setSummaryProviderId(list.defaultProviderId))
     } catch (error) {
       setFatal(error instanceof Error ? error.message : String(error))
       setScreen('record')
     } finally {
+      setRecording(false)
       setStopping(false)
     }
   }
@@ -428,7 +473,7 @@ export function App(): React.JSX.Element {
     await capture.current?.stop().catch(() => undefined)
     capture.current = null
     await window.notebro.recorder.cancel().catch(() => undefined)
-    setSessionId(null)
+    setRecording(false)
     setScreen('record')
   }
 
@@ -491,7 +536,7 @@ export function App(): React.JSX.Element {
         template: result.template
       })
       setLibrary(next)
-      setResult(null)
+      setResults((previous) => previous.filter((item) => item.sessionId !== result.sessionId))
       setOpenNote(note)
       setSelection(input.folderId ?? UNFILED)
       setScreen('note')
@@ -537,7 +582,19 @@ export function App(): React.JSX.Element {
     )
   }
 
-  const recordingActive = screen === 'recording'
+  // The recording and the processing go on whatever is shown; these screens
+  // only fall back when what they display no longer exists.
+  const shownJob =
+    queue.find((job) => job.error) ?? queue.find((job) => job.sessionId === runningId) ?? queue[0] ?? null
+  const view: Screen = (() => {
+    if (screen === 'record' || screen === 'recording') return recording ? 'recording' : 'record'
+    if (screen === 'processing' && !shownJob) return result ? 'result' : 'record'
+    if (screen === 'result' && !result) return 'record'
+    return screen
+  })()
+  const dropJob = (id: string): void => {
+    setQueue((previous) => previous.filter((job) => job.sessionId !== id))
+  }
 
   return (
     <div className="app">
@@ -550,8 +607,15 @@ export function App(): React.JSX.Element {
             ? { name: summaryProvider.name, ok: providerCheck?.ok ?? null, remote: summaryProvider.remote }
             : null
         }
-        busy={recordingActive || screen === 'processing'}
-        pendingResult={result !== null && screen !== 'result'}
+        recording={recording ? { elapsedMs: elapsed, paused, current: view === 'recording' } : null}
+        onResumeRecording={() => setScreen('recording')}
+        processing={
+          queue.length > 0 && view !== 'processing'
+            ? { count: queue.length, failed: queue.some((job) => job.error) }
+            : null
+        }
+        onResumeProcessing={() => setScreen('processing')}
+        pendingResults={view === 'result' ? 0 : results.length}
         onResumeResult={() => setScreen('result')}
         onSelect={(next) => {
           setSelection(next)
@@ -569,7 +633,7 @@ export function App(): React.JSX.Element {
 
       <div className="main">
         <div className="main__drag" />
-        <div className={`main__body${screen === 'note' || screen === 'result' ? ' main__body--wide' : ''}`}>
+        <div className={`main__body${view === 'note' || view === 'result' ? ' main__body--wide' : ''}`}>
           {fatal && (
             <div className="banner banner--error">
               <div className="banner__body">
@@ -582,7 +646,7 @@ export function App(): React.JSX.Element {
             </div>
           )}
 
-          {screen === 'record' && (
+          {view === 'record' && (
             <RecordView
               settings={settings}
               onPatch={(changes) => void patch(changes)}
@@ -621,7 +685,7 @@ export function App(): React.JSX.Element {
             />
           )}
 
-          {recordingActive && (
+          {view === 'recording' && (
             <RecordingView
               elapsedMs={elapsed}
               levels={levels}
@@ -648,26 +712,35 @@ export function App(): React.JSX.Element {
             />
           )}
 
-          {screen === 'processing' && (
+          {view === 'processing' && shownJob && (
             <ProcessingView
-              progress={progress}
-              channels={channels}
+              progress={progress?.sessionId === shownJob.sessionId ? progress : null}
+              channels={shownJob.channels}
               labels={settings.speakerLabels}
-              diarizing={settings.diarization && settings.captureSystem}
-              error={processError}
+              diarizing={settings.diarization && shownJob.channels.includes('them')}
+              error={shownJob.error ?? null}
               onCancel={() => {
-                void window.notebro.process.cancel()
+                if (shownJob.sessionId === runningId) void window.notebro.process.cancel()
+                dropJob(shownJob.sessionId)
                 setScreen('record')
               }}
               onRetry={() => {
-                if (sessionId) void runProcessing(sessionId, settings.language, liveNotes)
+                setQueue((previous) =>
+                  previous.map((job) =>
+                    job.sessionId === shownJob.sessionId ? { ...job, error: undefined } : job
+                  )
+                )
               }}
-              onBack={() => setScreen('record')}
+              onBack={() => {
+                dropJob(shownJob.sessionId)
+                setScreen('record')
+              }}
             />
           )}
 
-          {screen === 'result' && result && (
+          {view === 'result' && result && (
             <ResultView
+              key={result.sessionId}
               result={result}
               folders={library.folders}
               labels={settings.speakerLabels}
@@ -692,14 +765,15 @@ export function App(): React.JSX.Element {
                   .then((confirmed) => {
                     if (!confirmed) return
                     void window.notebro.draft.clear(result.sessionId)
-                    setResult(null)
-                    setScreen('record')
+                    setResults((previous) => previous.filter((item) => item.sessionId !== result.sessionId))
+                    // Another unfiled summary, if any, is shown next.
+                    if (results.length <= 1) setScreen('record')
                   })
               }}
             />
           )}
 
-          {screen === 'library' && (
+          {view === 'library' && (
             <NotesList
               library={library}
               selection={selection}
@@ -708,7 +782,7 @@ export function App(): React.JSX.Element {
             />
           )}
 
-          {screen === 'note' && openNote && (
+          {view === 'note' && openNote && (
             <NoteDetail
               note={openNote}
               folders={library.folders}
@@ -744,7 +818,7 @@ export function App(): React.JSX.Element {
             />
           )}
 
-          {screen === 'settings' && (
+          {view === 'settings' && (
             <SettingsView
               settings={settings}
               onPatch={(changes) => void patch(changes)}

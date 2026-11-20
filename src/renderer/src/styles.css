@@ -1273,6 +1273,40 @@ button.turn:last-child {
   flex: none;
 }
 
+.live-recording {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-color: var(--danger);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.live-recording--current {
+  background: var(--bg-input);
+}
+
+.live-recording__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex: none;
+  animation: live-recording-pulse 1.4s ease-in-out infinite;
+}
+
+.live-recording__dot--paused {
+  animation: none;
+  opacity: 0.5;
+}
+
+@keyframes live-recording-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 /* ---------- Notes typed during the conversation ---------- */
 
 .user-notes {

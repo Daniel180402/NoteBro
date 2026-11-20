@@ -5,7 +5,7 @@ import { access, writeFile } from 'node:fs/promises'
 import { BrowserWindow, app, dialog, ipcMain, session, shell } from 'electron'
 import { handleAudioRequests, registerAudioScheme } from './audio-protocol'
 import * as diarization from './diarization'
-import { clearDraft, loadDraft, saveDraft } from './draft'
+import { clearDraft, loadDrafts, saveDraft } from './draft'
 import type {
   DownloadProgress,
   ProcessProgress,
@@ -222,18 +222,20 @@ function registerIpc(): void {
       }
     ) => {
       processAbort?.abort()
-      processAbort = new AbortController()
+      const controller = new AbortController()
+      processAbort = controller
       try {
         const result = await pipeline.run({
           ...options,
-          signal: processAbort.signal,
+          signal: controller.signal,
           onProgress: (progress: ProcessProgress) => send('process:progress', progress)
         })
         // Persist it immediately: until the user files it, this is the only copy.
         await saveDraft(result)
         return result
       } finally {
-        processAbort = null
+        // A cancelled run can settle after the next one started: leave that one cancellable.
+        if (processAbort === controller) processAbort = null
       }
     }
   )
@@ -246,8 +248,9 @@ function registerIpc(): void {
     return storage.report(library.notes.map((note) => store.noteDirFor(note.id)))
   })
   ipcMain.handle('storage:cleanSessions', async () => {
-    const draft = await loadDraft()
-    return storage.cleanSessions(draft?.sessionId)
+    // Unfiled summaries, the recording under way and those still queued keep their audio.
+    const drafts = await loadDrafts()
+    return storage.cleanSessions([...drafts.map((draft) => draft.sessionId), ...recorder.sessionsInUse()])
   })
   ipcMain.handle('storage:compress', async () => {
     const pending = await store.notesToCompress()
@@ -264,10 +267,10 @@ function registerIpc(): void {
     return freed
   })
 
-  ipcMain.handle('draft:get', () => loadDraft())
-  ipcMain.handle('draft:clear', (_event, sessionId?: string) => {
-    clearDraft()
-    if (sessionId) recorder.discard(sessionId)
+  ipcMain.handle('draft:list', () => loadDrafts())
+  ipcMain.handle('draft:clear', (_event, sessionId: string) => {
+    clearDraft(sessionId)
+    recorder.discard(sessionId)
   })
 
   ipcMain.handle('library:load', () => store.getLibrary())
@@ -333,7 +336,7 @@ function registerIpc(): void {
         : undefined
 
       const result = await store.saveNote({ ...input, audio })
-      clearDraft()
+      clearDraft(input.sessionId)
       recorder.discard(input.sessionId)
 
       // Shrink the recording once it is safely filed, never before.

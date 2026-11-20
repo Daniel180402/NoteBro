@@ -177,8 +177,8 @@ const api = {
   },
 
   draft: {
-    get: (): Promise<ProcessResult | null> => ipcRenderer.invoke('draft:get'),
-    clear: (sessionId?: string): Promise<void> => ipcRenderer.invoke('draft:clear', sessionId)
+    list: (): Promise<ProcessResult[]> => ipcRenderer.invoke('draft:list'),
+    clear: (sessionId: string): Promise<void> => ipcRenderer.invoke('draft:clear', sessionId)
   },
 
   library: {

@@ -66,12 +66,13 @@ export function report(noteDirs: string[]): StorageReport {
 }
 
 /** Deletes leftover recordings of sessions that were never filed. */
-export function cleanSessions(keepSessionId?: string): number {
+export function cleanSessions(keep: Iterable<string> = []): number {
+  const kept = new Set(keep)
   const sessions = join(root(), 'sessions')
   if (!existsSync(sessions)) return 0
   let freed = 0
   for (const entry of readdirSync(sessions, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === keepSessionId) continue
+    if (!entry.isDirectory() || kept.has(entry.name)) continue
     const path = join(sessions, entry.name)
     freed += directorySize(path)
     rmSync(path, { recursive: true, force: true })
